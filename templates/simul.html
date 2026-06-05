@@ -1,0 +1,1492 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>매매추적 시뮬레이션</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    h1 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #1a1a2e;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 span { font-size: 1.4rem; }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 24px;
+      max-width: 560px;
+      margin: 0 auto 24px;
+    }
+
+    .section-title {
+      font-size: .75rem;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 16px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .form-grid .full { grid-column: 1 / -1; }
+
+    .field label {
+      display: block;
+      font-size: .8rem;
+      font-weight: 600;
+      color: #444;
+      margin-bottom: 5px;
+    }
+
+    .field input {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: .9rem;
+      color: #1a1a2e;
+      transition: border-color .2s;
+      outline: none;
+    }
+    .field input:focus { border-color: #4361ee; }
+    .field input.loading { background: #f8f8f8; color: #999; }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    button {
+      flex: 1;
+      padding: 11px;
+      border: none;
+      border-radius: 8px;
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    button:active { transform: scale(.97); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-calc  { background: #4361ee; color: #fff; }
+    .btn-reset { background: #f0f2f5; color: #555; }
+
+    /* 미리보기 카드 */
+    .preview-card {
+      border: 2px solid #4361ee22;
+      background: #f7f8ff;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 560px;
+      margin: 0 auto 24px;
+    }
+    .preview-card h2 {
+      font-size: .95rem;
+      font-weight: 700;
+      color: #4361ee;
+      margin-bottom: 14px;
+    }
+
+    .preview-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid #e8eaff;
+      font-size: .88rem;
+    }
+    .preview-row:last-child { border-bottom: none; }
+    .preview-row .lbl { color: #666; }
+    .preview-row .val { font-weight: 600; color: #1a1a2e; }
+    .preview-row .val.neg { color: #e63946; }
+    .preview-row .val.rate { color: #e63946; font-size: .82rem; }
+
+    .divider { border: none; border-top: 1.5px dashed #d0d4ff; margin: 10px 0; }
+
+    .btn-save   { background: #2dc653; color: #fff; }
+    .btn-cancel { background: #f0f2f5; color: #555; }
+
+    /* 알림 */
+    .alert {
+      max-width: 560px;
+      margin: 0 auto 16px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: .87rem;
+      font-weight: 500;
+    }
+    .alert.error   { background: #fff0f0; color: #c0392b; border: 1px solid #fac8c8; }
+    .alert.success { background: #f0fff4; color: #27ae60; border: 1px solid #b2dfdb; }
+    .alert.warn    { background: #fffbe6; color: #b8860b; border: 1px solid #ffe58f; }
+
+    /* 목록 */
+    .list-card {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 24px;
+    }
+    .list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    .list-header h2 { font-size: 1rem; font-weight: 700; color: #1a1a2e; }
+    .btn-refresh {
+      background: #f0f2f5;
+      color: #555;
+      padding: 7px 14px;
+      font-size: .82rem;
+      border-radius: 6px;
+      flex: none;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .83rem;
+    }
+    th {
+      background: #f7f8ff;
+      color: #555;
+      font-weight: 600;
+      padding: 9px 10px;
+      text-align: right;
+      border-bottom: 2px solid #e8eaff;
+      white-space: nowrap;
+    }
+    th:first-child, th:nth-child(2), th:nth-child(3) { text-align: left; }
+    td {
+      padding: 8px 10px;
+      text-align: right;
+      border-bottom: 1px solid #f0f0f0;
+      color: #333;
+      white-space: nowrap;
+    }
+    td:first-child, td:nth-child(2), td:nth-child(3) { text-align: left; }
+    tr:hover td { background: #f7f8ff; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .tag-m { background: #e8f4fd; color: #1a73e8; }
+    .tag-s { background: #fde8e8; color: #c0392b; }
+    .tag-1 { background: #e8fdf0; color: #1e8a46; }
+
+    .del-btn {
+      background: none;
+      border: none;
+      color: #ccc;
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0 4px;
+      flex: none;
+    }
+    .del-btn:hover { color: #e63946; }
+
+    .empty-msg {
+      text-align: center;
+      color: #aaa;
+      padding: 30px 0;
+      font-size: .9rem;
+    }
+
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+    }
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 4px solid #e0e0e0;
+      border-top-color: #4361ee;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .btn-set    { background: #7b2ff7; color: #fff; }
+    .btn-trail  { background: #f97316; color: #fff; }
+    .btn-update { background: #e63946; color: #fff; }
+
+    .field select {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: .9rem;
+      color: #1a1a2e;
+      background: #fff;
+      outline: none;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    .field select:focus { border-color: #4361ee; }
+
+    .derived-box {
+      background: #f7f8ff;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: .84rem;
+      color: #444;
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+
+    .update-history { margin-top: 18px; border-top: 1.5px dashed #e8eaff; padding-top: 14px; }
+    .update-history-title { font-size: .72rem; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+    .update-log-item {
+      background: #f9f9fc;
+      border: 1px solid #e8eaff;
+      border-radius: 8px;
+      padding: 9px 12px;
+      margin-bottom: 7px;
+      font-size: .81rem;
+    }
+    .update-log-item .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .update-log-item .log-who { color: #555; font-weight: 600; }
+    .update-log-item .log-time { color: #aaa; font-size: .76rem; }
+    .update-log-item .log-fields { color: #444; margin-top: 3px; }
+    .update-log-item .log-result { font-weight: 700; }
+    .update-log-item .log-result.ok  { color: #27ae60; }
+    .update-log-item .log-result.ng  { color: #b8860b; }
+
+    .run-log {
+      background: #1a1a2e;
+      color: #a8ff78;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: .76rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 320px;
+      overflow-y: auto;
+      font-family: 'Consolas', 'Courier New', monospace;
+      margin-top: 12px;
+    }
+
+    /* 종목 정보 박스 */
+    .stock-info-box {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .stock-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .badge-market  { background: #e8f4fd; color: #1a73e8; }
+    .badge-large   { background: #fde8f7; color: #8b1a8b; }
+    .badge-mid     { background: #e8fde8; color: #1a8b2a; }
+    .badge-small   { background: #fdf3e8; color: #8b4a1a; }
+    .badge-industry{ background: #f0f2f5; color: #555; }
+    .amt-suggest {
+      font-size: .82rem;
+      color: #444;
+      background: #fffbe6;
+      border: 1px solid #ffe58f;
+      border-radius: 7px;
+      padding: 7px 12px;
+      margin-top: 4px;
+    }
+
+    /* ── 대시보드 ── */
+    .dash-card {
+      max-width: 900px;
+      margin: 0 auto 20px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 18px 22px;
+    }
+    .dash-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    .dash-title { font-size: .88rem; font-weight: 700; color: #1a1a2e; }
+    .dash-date-badge {
+      font-size: .76rem; color: #888;
+      background: #f0f2f5; padding: 3px 10px; border-radius: 12px;
+    }
+    .dash-summary {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .dash-metric {
+      background: #f7f8ff;
+      border-radius: 9px;
+      padding: 10px 8px;
+      text-align: center;
+    }
+    .dash-metric-lbl { font-size: .69rem; color: #999; margin-bottom: 4px; }
+    .dash-metric-val { font-size: .88rem; font-weight: 700; color: #1a1a2e; line-height: 1.2; }
+    .dash-metric-val.pos { color: #2dc653; }
+    .dash-metric-val.neg { color: #e63946; }
+    .dash-no-data { text-align: center; color: #ccc; padding: 20px; font-size: .85rem; }
+    .dash-stocks table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+    .dash-stocks th {
+      background: #f7f8ff; color: #666; font-weight: 600;
+      padding: 6px 9px; border-bottom: 1.5px solid #e8eaff;
+      text-align: right; white-space: nowrap;
+    }
+    .dash-stocks th:first-child, .dash-stocks th:nth-child(2) { text-align: left; }
+    .dash-stocks td {
+      padding: 6px 9px; border-bottom: 1px solid #f5f5f5;
+      text-align: right; color: #333; white-space: nowrap;
+    }
+    .dash-stocks td:first-child, .dash-stocks td:nth-child(2) { text-align: left; }
+    .dash-stocks tr:hover td { background: #f9f9ff; }
+    .dash-btn-refresh {
+      background: none; border: 1px solid #e0e0e0; color: #888;
+      font-size: .75rem; padding: 3px 10px; border-radius: 6px;
+      cursor: pointer; flex: none; font-weight: 500;
+    }
+    .dash-btn-refresh:hover { background: #f0f2f5; color: #555; }
+    @media (max-width: 600px) { .dash-summary { grid-template-columns: repeat(3, 1fr); } }
+
+    @media (max-width: 500px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .form-grid .full { grid-column: 1; }
+    }
+
+    /* 상단 제어 버튼 */
+    .top-ctrl {
+      max-width: 900px;
+      margin: 0 auto 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn-import     { background: #0077b6; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+    .btn-save-all   { background: #2dc653; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+    .btn-delete-all { background: #e63946; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- 로딩 오버레이 -->
+  <div class="loading-overlay" v-if="loading">
+    <div class="spinner"></div>
+  </div>
+
+  <h1><span>📈</span> 매매추적 시뮬레이션</h1>
+
+  <!-- 상단 제어 버튼 -->
+  <div class="top-ctrl">
+    <button class="btn-import"     @click="triggerImport" :disabled="loading">📂 가져오기</button>
+    <button class="btn-save-all"   @click="saveAll"       :disabled="loading">💾 전체저장</button>
+    <button class="btn-delete-all" @click="deleteAll"     :disabled="loading">🗑️ 전체삭제</button>
+    <input type="file" ref="fileInput" @change="importCsv" accept=".csv" style="display:none" />
+  </div>
+
+  <!-- 대시보드 -->
+  <div class="dash-card">
+    <div class="dash-header">
+      <span class="dash-title">📊 시뮬레이션 현황</span>
+      <span style="display:flex;align-items:center;gap:8px">
+        <span class="dash-date-badge">{{ fmtDay(simDate) }} 기준</span>
+        <button class="dash-btn-refresh" @click="loadDashboard">새로고침</button>
+      </span>
+    </div>
+
+    <div v-if="!dashboard" class="dash-no-data">{{ simDate ? '데이터 없음 (' + fmtDay(simDate) + ')' : '수행일자를 설정하세요' }}</div>
+
+    <template v-else>
+      <!-- 자산 현황 -->
+      <div class="dash-summary">
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">총평가금액</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.tot_evlu_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">예수금</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.prvs_excc_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">매수금액</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.pchs_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">평가손익</div>
+          <div class="dash-metric-val" :class="(dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? 'pos' : 'neg'">
+            {{ (dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.evlu_pfls_amt) }}
+          </div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">당일손익</div>
+          <div class="dash-metric-val" :class="(dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? 'pos' : 'neg'">
+            {{ (dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.total_profit_loss_amt) }}
+          </div>
+        </div>
+      </div>
+
+      <!-- 종목별 현황 -->
+      <div class="dash-stocks" v-if="dashboard.stocks.length > 0">
+        <table>
+          <thead>
+            <tr>
+              <th>종목코드</th><th>종목명</th>
+              <th>보유단가</th><th>보유수량</th><th>보유금액</th>
+              <th>수익율</th><th>수익금액</th><th>매도수량</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in dashboard.stocks" :key="s.code">
+              <td>{{ s.code }}</td>
+              <td>{{ s.name }}</td>
+              <td>{{ fmt(s.balance_price) }}</td>
+              <td>{{ fmt(s.balance_qty) }}</td>
+              <td>{{ fmt(s.balance_amt) }}</td>
+              <td :style="{color: s.value_rate >= 0 ? '#2dc653' : '#e63946', fontWeight:600}">
+                {{ s.value_rate >= 0 ? '+' : '' }}{{ s.value_rate.toFixed(2) }}%
+              </td>
+              <td :style="{color: s.value_amt >= 0 ? '#2dc653' : '#e63946'}">
+                {{ s.value_amt >= 0 ? '+' : '' }}{{ fmt(s.value_amt) }}
+              </td>
+              <td>{{ s.sell_qty > 0 ? fmt(s.sell_qty) : '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="dash-no-data" style="padding:8px 0">보유 종목 없음</div>
+    </template>
+  </div>
+
+  <!-- 알림 -->
+  <div v-if="alert.msg" :class="['alert', alert.type]">{{ alert.msg }}</div>
+
+  <!-- 입력 폼 -->
+  <div class="card" v-if="!preview">
+    <div class="section-title">매수 정보 입력</div>
+    <div class="form-grid">
+
+      <div class="field full">
+        <label>종목코드 / 종목명 *</label>
+        <input
+          v-model.trim="form.code"
+          @blur="lookupName"
+          placeholder="코드(005930) 또는 종목명"
+          :class="{loading: nameLookingUp}"
+        />
+        <div v-if="form.name" style="font-size:.78rem;color:#4361ee;margin-top:4px;padding-left:2px">
+          {{ form.name }}
+        </div>
+      </div>
+
+      <!-- 종목 정보 표시 -->
+      <div class="field full" v-if="stockInfo">
+        <div class="stock-info-box">
+          <span class="stock-badge badge-market">{{ stockInfo.market }}</span>
+          <span class="stock-badge" :class="sizeClass(stockInfo.size)">{{ stockInfo.size }}</span>
+          <span class="stock-badge badge-industry">{{ stockInfo.industry }}</span>
+          <span style="font-size:.76rem;color:#888">시가총액 {{ stockInfo.mktcap_str }}</span>
+        </div>
+        <div class="amt-suggest">
+          💡 권장 매수금액: <b>{{ fmt(stockInfo.amt_min) }}원 ~ {{ fmt(stockInfo.amt_max) }}원</b>
+          <span style="color:#888;font-size:.78rem;margin-left:6px">({{ stockInfo.amt_desc }})</span>
+        </div>
+        <div class="amt-suggest" v-if="stockInfo.suggest_loss_amt">
+          ✂️ 제안 손절금액: <b>{{ stockInfo.suggest_loss_amt_str }}</b>
+          <span style="color:#888;font-size:.78rem;margin-left:6px">(시장비율 {{ stockInfo.suggest_loss_market_ratio }}%<span v-if="stockInfo.suggest_loss_base_dt">, 기준일 {{ stockInfo.suggest_loss_base_dt }}</span>)</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>매수가 (원) *</label>
+        <input
+          v-model.number="form.buy_price"
+          type="number"
+          min="1"
+          placeholder="예) 75000"
+        />
+      </div>
+
+      <div class="field">
+        <label>이탈가 (원) *</label>
+        <input
+          v-model.number="form.loss_price"
+          type="number"
+          min="1"
+          placeholder="예) 68000"
+        />
+      </div>
+
+      <div class="field">
+        <label>매수금액 (원) *</label>
+        <input
+          v-model.number="form.buy_amount"
+          type="number"
+          min="1"
+          placeholder="예) 5000000"
+        />
+      </div>
+
+      <div class="field">
+        <label>매수일자 *</label>
+        <input
+          v-model="form.buy_date"
+          type="date"
+        />
+      </div>
+
+      <div class="field">
+        <label>매수시간 (HHMMSS)</label>
+        <input
+          v-model.trim="form.buy_time"
+          maxlength="6"
+          placeholder="예) 091500"
+          style="font-family:monospace"
+        />
+      </div>
+
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-reset" @click="resetForm">초기화</button>
+      <button class="btn-calc" @click="calculate" :disabled="!canCalc">계산 / 미리보기</button>
+    </div>
+  </div>
+
+  <!-- 미리보기 -->
+  <div class="preview-card" v-if="preview">
+    <h2>📋 매수금액 기준 계산 결과</h2>
+
+    <div class="preview-row">
+      <span class="lbl">종목</span>
+      <span class="val">{{ preview.name }} ({{ preview.code }})</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매수일자</span>
+      <span class="val">{{ fmtDay(preview.buy_date) }}</span>
+    </div>
+    <hr class="divider" />
+    <div class="preview-row">
+      <span class="lbl">매수가</span>
+      <span class="val">{{ fmt(preview.buy_price) }} 원</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">이탈가 (손절율)</span>
+      <span class="val">
+        {{ fmt(preview.loss_price) }} 원
+        <span class="rate neg"> {{ preview.loss_rate }}%</span>
+      </span>
+    </div>
+    <hr class="divider" />
+    <div class="preview-row">
+      <span class="lbl">매수수량</span>
+      <span class="val">{{ fmt(preview.amt_buy_qty) }} 주</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">실제 매수금액</span>
+      <span class="val">{{ fmt(preview.amt_buy_amt) }} 원</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">목표가 (안전마진)</span>
+      <span class="val" style="color:#2dc653">
+        {{ fmt(preview.target_price) }} 원
+        <span class="rate" style="color:#2dc653"> +{{ preview.target_rate }}%</span>
+      </span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">예상 손실금액</span>
+      <span class="val neg">{{ fmt(preview.amt_item_loss) }} 원</span>
+    </div>
+
+    <div class="btn-row" style="margin-top:18px">
+      <button class="btn-cancel" @click="preview=null">← 수정</button>
+      <button class="btn-save" @click="save">저장 (trading_trail_simul)</button>
+    </div>
+  </div>
+
+  <!-- 매도 / 변경 통합 -->
+  <div class="card" v-if="!sellPreview">
+    <div class="section-title">매도 / 매매추적 변경</div>
+
+    <!-- 모드 선택 -->
+    <div style="display:flex;gap:24px;margin-bottom:18px;align-items:center">
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-weight:700;font-size:.9rem">
+        <input type="radio" v-model="trailMode" value="sell" style="accent-color:#e63946;width:15px;height:15px" />
+        <span :style="{color: trailMode==='sell' ? '#e63946' : '#555'}">매도</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-weight:700;font-size:.9rem">
+        <input type="radio" v-model="trailMode" value="edit" style="accent-color:#7b2ff7;width:15px;height:15px" />
+        <span :style="{color: trailMode==='edit' ? '#7b2ff7' : '#555'}">변경</span>
+      </label>
+    </div>
+
+    <!-- 일자 선택 -->
+    <div class="field" style="margin-bottom:16px">
+      <label>{{ trailMode === 'sell' ? '매도' : '변경' }}일자 *</label>
+      <input v-model="trailActionDate" type="date" @change="loadActiveStocks" />
+    </div>
+
+    <!-- 종목 버튼 리스트 -->
+    <div v-if="activeStocksLoading" style="color:#aaa;font-size:.83rem;padding:6px 0 12px">종목 조회 중...</div>
+    <template v-else-if="trailActionDate">
+      <div v-if="activeStocks.length > 0" style="margin-bottom:16px">
+        <div style="font-size:.72rem;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">종목 선택</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button v-for="s in activeStocks" :key="s.code"
+            @click="selectActiveStock(s)"
+            :style="{
+              background: selectedStock && selectedStock.code === s.code
+                ? (trailMode==='sell' ? '#e63946' : '#7b2ff7') : '#f0f2f5',
+              color: selectedStock && selectedStock.code === s.code ? '#fff' : '#444',
+              borderRadius: '8px', padding: '7px 12px',
+              fontSize: '.78rem', fontWeight: '600', flex: 'none',
+              border: 'none', cursor: 'pointer', lineHeight: '1.5', textAlign: 'center',
+              minWidth: '72px'
+            }"
+          >
+            <div>{{ s.code }}</div>
+            <div style="font-size:.7rem;font-weight:400">{{ s.name }}</div>
+            <div style="font-size:.68rem;opacity:.75">{{ trailTpLabel(s.trail_tp) }}</div>
+          </button>
+        </div>
+      </div>
+      <div v-else style="color:#bbb;font-size:.83rem;padding:4px 0 12px">해당일 활성 종목 없음</div>
+    </template>
+
+    <!-- 선택된 종목 정보 -->
+    <div v-if="selectedStock" style="background:#f7f8ff;border-radius:8px;padding:10px 14px;font-size:.84rem;color:#444;margin-bottom:16px;border:1px solid #e8eaff">
+      <b>{{ selectedStock.name }}</b> ({{ selectedStock.code }})
+      &nbsp;·&nbsp; 보유단가 <b>{{ fmt(selectedStock.basic_price) }}원</b>
+      &nbsp;·&nbsp; 보유수량 <b>{{ fmt(selectedStock.basic_qty) }}주</b>
+    </div>
+
+    <!-- 매도 입력 -->
+    <template v-if="trailMode === 'sell' && selectedStock">
+      <div class="form-grid">
+        <div class="field">
+          <label>매도가 (원) *</label>
+          <input v-model.number="sellForm.sell_price" type="number" min="1" placeholder="예) 82000" />
+        </div>
+        <div class="field">
+          <label>매도비율 (%) *</label>
+          <input v-model.number="sellForm.sell_ratio" type="number" min="1" max="100" placeholder="100" />
+        </div>
+        <div class="field">
+          <label>매도시간 (HHMMSS)</label>
+          <input v-model.trim="sellForm.sell_time" maxlength="6" placeholder="예) 143000" style="font-family:monospace" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-calc" @click="calculateSell"
+          :disabled="!sellForm.sell_price || sellForm.sell_price <= 0 || !sellForm.sell_ratio || !sellForm.sell_date">
+          계산 / 미리보기
+        </button>
+      </div>
+    </template>
+
+    <!-- 변경 입력 -->
+    <template v-if="trailMode === 'edit' && selectedStock">
+      <div class="form-grid">
+        <div class="field">
+          <label>추적유형</label>
+          <select v-model="trailEdit.trail_tp">
+            <option value="">-- 미변경 --</option>
+            <option value="1">1 (추적대기)</option>
+            <option value="2">2 (추적중)</option>
+            <option value="3">3 (안전마진)</option>
+            <option value="L">L (장기보유)</option>
+            <option value="P">P (추적멈춤)</option>
+            <option value="4">4 (완전매도)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>이탈가</label>
+          <input v-model.number="trailEdit.stop_price" type="number" min="0" placeholder="미입력시 유지" />
+        </div>
+        <div class="field">
+          <label>목표가</label>
+          <input v-model.number="trailEdit.target_price" type="number" min="0" placeholder="미입력시 유지" />
+        </div>
+        <div class="field">
+          <label>최종이탈가</label>
+          <input v-model.number="trailEdit.exit_price" type="number" min="0" placeholder="미입력시 유지" />
+        </div>
+        <div class="field">
+          <label>매수단가</label>
+          <input v-model.number="trailEdit.basic_price" type="number" min="0" placeholder="미입력시 유지" />
+        </div>
+        <div class="field">
+          <label>매수량</label>
+          <input v-model.number="trailEdit.basic_qty" type="number" min="0" placeholder="미입력시 유지" />
+        </div>
+        <div class="field full" v-if="trailEditBasicAmt !== null || trailEditLossAmt !== null">
+          <div class="derived-box">
+            <span v-if="trailEditBasicAmt !== null">매수금액: <b>{{ fmt(trailEditBasicAmt) }} 원</b></span>
+            <span v-if="trailEditLossAmt !== null">손실금액: <b style="color:#e63946">{{ fmt(trailEditLossAmt) }} 원</b></span>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-update" @click="updateTrail" :disabled="loading">매매추적 변경</button>
+      </div>
+
+      <div v-if="updateLog.length > 0" class="update-history">
+        <div class="update-history-title">변경 내역 (최근 {{ updateLog.length }}건)</div>
+        <div v-for="(log, i) in updateLog" :key="i" class="update-log-item">
+          <div class="log-header">
+            <span class="log-who">
+              {{ fmtDay(log.date) }} &nbsp;
+              {{ log.code }}{{ log.name ? ' (' + log.name + ')' : '' }}
+            </span>
+            <span class="log-time">{{ log.time }}</span>
+          </div>
+          <div v-if="log.fieldStr" class="log-fields">{{ log.fieldStr }}</div>
+          <div class="log-result" :class="log.success ? 'ok' : 'ng'">{{ log.message }}</div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- 매도 미리보기 -->
+  <div class="preview-card" v-if="sellPreview">
+    <h2>📋 매도 계산 결과</h2>
+    <div class="preview-row">
+      <span class="lbl">종목</span>
+      <span class="val">{{ sellPreview.name }} ({{ sellPreview.code }})</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매도일자</span>
+      <span class="val">{{ fmtDay(sellPreview.sell_date) }}</span>
+    </div>
+    <hr class="divider" />
+    <div class="preview-row">
+      <span class="lbl">매수단가</span>
+      <span class="val">{{ fmt(sellPreview.basic_price) }} 원</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">보유수량</span>
+      <span class="val">{{ fmt(sellPreview.basic_qty) }} 주</span>
+    </div>
+    <hr class="divider" />
+    <div class="preview-row">
+      <span class="lbl">매도가</span>
+      <span class="val">{{ fmt(sellPreview.sell_price) }} 원</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매도비율</span>
+      <span class="val">{{ sellPreview.sell_ratio }} %</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매도수량</span>
+      <span class="val">{{ fmt(sellPreview.trail_qty) }} 주</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매도금액</span>
+      <span class="val">{{ fmt(sellPreview.trail_amt) }} 원</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">수익률</span>
+      <span class="val" :class="sellPreview.trail_rate >= 0 ? 'rate' : 'rate neg'">
+        {{ sellPreview.trail_rate >= 0 ? '+' : '' }}{{ sellPreview.trail_rate }} %
+      </span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">매도 후 잔여수량</span>
+      <span class="val">{{ fmt(sellPreview.remaining_qty) }} 주</span>
+    </div>
+    <div class="preview-row">
+      <span class="lbl">처리유형</span>
+      <span class="val">trail_tp = <b>{{ sellPreview.new_trail_tp }}</b> ({{ sellPreview.new_trail_tp === '4' ? '전량매도' : '부분매도' }})</span>
+    </div>
+    <div class="btn-row" style="margin-top:18px">
+      <button class="btn-cancel" @click="sellPreview=null">← 수정</button>
+      <button class="btn-save" @click="executeSell">매도 처리 저장</button>
+    </div>
+  </div>
+
+  <!-- 시뮬레이션 실행 제어 -->
+  <div class="card">
+    <div class="section-title">시뮬레이션 실행</div>
+    <div class="form-grid">
+      <div class="field full">
+        <label>수행일자</label>
+        <input v-model="simDate" type="date" />
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-set"   @click="runSet"   :disabled="running || !simDate">추적등록</button>
+      <button class="btn-trail" @click="runTrail" :disabled="running || !simDate">추적실행</button>
+    </div>
+    <pre v-if="runLog" class="run-log">{{ runLog }}</pre>
+  </div>
+
+  <!-- 저장 내역 -->
+  <div class="list-card">
+    <div class="list-header">
+      <h2>저장 내역 (최근 100건)</h2>
+      <button class="btn-refresh" @click="loadList">새로고침</button>
+    </div>
+
+    <div v-if="listError" class="alert error" style="margin-bottom:12px">{{ listError }}</div>
+
+    <div v-if="records.length === 0 && !listError" class="empty-msg">저장된 데이터가 없습니다.</div>
+
+    <div v-if="records.length > 0" style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>종목코드</th>
+            <th>종목명</th>
+            <th>매수일자</th>
+            <th>추적시간</th>
+            <th>추적유형</th>
+            <th>매수가</th>
+            <th>이탈가</th>
+            <th>목표가</th>
+            <th>매수량</th>
+            <th>매수금액</th>
+            <th>최종이탈가</th>
+            <th>손실금액</th>
+            <th>유형</th>
+            <th>매도비율</th>
+            <th>매도가</th>
+            <th>매도수량</th>
+            <th>매도금액</th>
+            <th>수익율</th>
+            <th>수익금액</th>
+            <th>매도사유</th>
+            <th>등록일시</th>
+            <th>수정일시</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in records" :key="r.code+r.trail_day+r.trail_tp">
+            <td>{{ r.code }}</td>
+            <td>{{ r.name }}</td>
+            <td>{{ fmtDay(r.trail_day) }}</td>
+            <td>{{ r.proc_min }}</td>
+            <td>{{ trailTpLabel(r.trail_tp) }}</td>
+            <td>{{ fmt(r.basic_price) }}</td>
+            <td>{{ fmt(r.stop_price) }}</td>
+            <td style="color:#2dc653">{{ fmt(r.target_price) }}</td>
+            <td>{{ fmt(r.basic_qty) }}</td>
+            <td>{{ fmt(r.basic_amt) }}</td>
+            <td>{{ fmt(r.exit_price) }}</td>
+            <td style="color:#e63946">{{ fmt(r.loss_amt) }}</td>
+            <td>
+              <span :class="['tag', r.trade_tp==='M'?'tag-m':'tag-s']">
+                {{ r.trade_tp === 'M' ? '매수금액' : '손절금액' }}
+              </span>
+            </td>
+            <td>{{ r.trail_plan != null ? r.trail_plan + '%' : '-' }}</td>
+            <td>{{ fmt(r.trail_price) }}</td>
+            <td>{{ fmt(r.trail_qty) }}</td>
+            <td>{{ fmt(r.trail_amt) }}</td>
+            <td>{{ r.trail_rate != null ? r.trail_rate + '%' : '-' }}</td>
+            <td>{{ r.trail_rate != null ? fmt((r.trail_price-r.basic_price)*r.trail_qty) : '-'}}</td>
+            <td>{{ r.trade_result || '-' }}</td>
+            <td>{{ r.crt_dt }}</td>
+            <td>{{ r.mod_dt }}</td>
+            <td>
+              <button class="del-btn" @click="deleteRecord(r)" title="삭제">✕</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, reactive } = Vue;
+
+createApp({
+  setup() {
+    const today    = new Date().toISOString().slice(0, 10);
+    const fileInput = ref(null);
+
+    const form = ref({
+      code: '', name: '', buy_price: null, loss_price: null,
+      buy_amount: null, buy_date: today, buy_time: ''
+    });
+
+    const preview       = ref(null);
+    const records       = ref([]);
+    const loading       = ref(false);
+    const nameLookingUp = ref(false);
+    const listError     = ref('');
+    const alert         = ref({ msg: '', type: 'error' });
+    const updateLog     = ref([]);
+    const stockInfo     = ref(null);
+    const dashboard     = ref(null);
+
+    const CHANGE_LABELS = {
+      stop_price: '이탈가', target_price: '목표가', exit_price: '최종이탈가',
+      basic_price: '매수단가', basic_qty: '매수량', trail_tp: '추적유형', proc_min: '처리시간',
+    };
+
+    const sellForm = ref({
+      code: '', name: '', sell_price: null, sell_ratio: 100, sell_date: today, sell_time: ''
+    });
+    const sellPreview    = ref(null);
+    const sellLookingUp  = ref(false);
+
+    // 통합 매도/변경 상태
+    const trailMode            = ref('sell');
+    const trailActionDate      = ref(today);
+    const activeStocks         = ref([]);
+    const activeStocksLoading  = ref(false);
+    const selectedStock        = ref(null);
+
+    async function loadActiveStocks() {
+      if (!trailActionDate.value) { activeStocks.value = []; selectedStock.value = null; return; }
+      const dateStr = trailActionDate.value.replace(/-/g, '');
+      activeStocksLoading.value = true;
+      selectedStock.value = null;
+      try {
+        const res  = await fetch(`/api/active-stocks?date=${dateStr}`);
+        const data = await res.json();
+        activeStocks.value = Array.isArray(data) ? data : [];
+      } catch {
+        activeStocks.value = [];
+      } finally {
+        activeStocksLoading.value = false;
+      }
+    }
+
+    function selectActiveStock(s) {
+      selectedStock.value = s;
+      sellForm.value.code       = s.code;
+      sellForm.value.name       = s.name;
+      sellForm.value.sell_date  = trailActionDate.value;
+      sellForm.value.sell_price = null;
+      sellForm.value.sell_ratio = 100;
+      sellForm.value.sell_time  = '';
+      trailEdit.value.code         = s.code;
+      trailEdit.value.name         = s.name;
+      trailEdit.value.change_date  = trailActionDate.value;
+      trailEdit.value.trail_tp     = '';
+      trailEdit.value.stop_price   = null;
+      trailEdit.value.target_price = null;
+      trailEdit.value.exit_price   = null;
+      trailEdit.value.basic_price  = null;
+      trailEdit.value.basic_qty    = null;
+      trailEdit.value.proc_min     = '';
+    }
+
+    const canSellCalc = computed(() =>
+      sellForm.value.code.length >= 5 &&
+      sellForm.value.sell_price > 0 &&
+      sellForm.value.sell_ratio > 0 &&
+      sellForm.value.sell_date
+    );
+
+    async function lookupSellName() {
+      const val = sellForm.value.code.trim();
+      if (!val) return;
+      sellLookingUp.value = true;
+      try {
+        const code = /^\d+$/.test(val) ? val.padStart(6, '0') : null;
+        if (code) {
+          sellForm.value.code = code;
+          const res  = await fetch(`/api/stock-name?code=${code}`);
+          const data = await res.json();
+          if (data.name) sellForm.value.name = data.name;
+        } else {
+          const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
+          const data = await res.json();
+          if (data.code) {
+            sellForm.value.code = data.code;
+            sellForm.value.name = val;
+          }
+        }
+      } catch { /* 무시 */ } finally {
+        sellLookingUp.value = false;
+      }
+    }
+
+    async function calculateSell() {
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/sell-preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code:       sellForm.value.code,
+            sell_date:  sellForm.value.sell_date,
+            sell_price: sellForm.value.sell_price,
+            sell_ratio: sellForm.value.sell_ratio,
+          })
+        });
+        const data = await res.json();
+        if (data.error) { showAlert(data.error); return; }
+        sellPreview.value = data;
+      } catch (e) {
+        showAlert('매도 미리보기 오류: ' + e);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function executeSell() {
+      if (!sellPreview.value) return;
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/sell', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...sellPreview.value, sell_time: sellForm.value.sell_time })
+        });
+        const data = await res.json();
+        if (data.error) { showAlert(data.error); return; }
+        showAlert(data.message, 'success');
+        sellPreview.value = null;
+        sellForm.value = { code: '', name: '', sell_price: null, sell_ratio: 100, sell_date: today };
+        loadList();
+      } catch (e) {
+        showAlert('매도 처리 오류: ' + e);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    const simDate = ref(form.value.buy_date);
+    const running = ref(false);
+    const runLog  = ref('');
+
+    watch(() => form.value.buy_date, (d) => { if (d) simDate.value = d; });
+
+    const trailEdit = ref({
+      change_date: today, code: '', name: '', proc_min: '',
+      stop_price: null, target_price: null, exit_price: null,
+      basic_price: null, basic_qty: null, trail_tp: '',
+    });
+    const trailEditLookingUp = ref(false);
+
+    const trailEditBasicAmt = computed(() => {
+      const p = trailEdit.value.basic_price, q = trailEdit.value.basic_qty;
+      return (p && q) ? p * q : null;
+    });
+    const trailEditLossAmt = computed(() => {
+      const p = trailEdit.value.basic_price;
+      const e = trailEdit.value.exit_price;
+      const q = trailEdit.value.basic_qty;
+      return (p && e && q) ? (p - e) * q : null;
+    });
+
+    const canCalc = computed(() =>
+      form.value.code.length >= 5 &&
+      form.value.buy_price  > 0 &&
+      form.value.loss_price > 0 &&
+      form.value.buy_amount > 0 &&
+      form.value.buy_date
+    );
+
+    function showAlert(msg, type = 'error', ms = 4000) {
+      alert.value = { msg, type };
+      setTimeout(() => { alert.value.msg = ''; }, ms);
+    }
+
+    async function fetchStockInfo(code, buyDate) {
+      stockInfo.value = null;
+      if (!code || code.length !== 6) return;
+      nameLookingUp.value = true;
+      try {
+        const dateParam = buyDate ? `&buy_date=${buyDate.replace(/-/g, '')}` : '';
+        const res  = await fetch(`/api/stock-info?code=${code}${dateParam}`);
+        const data = await res.json();
+        if (!data.error) stockInfo.value = data;
+      } catch { /* 무시 */ } finally {
+        nameLookingUp.value = false;
+      }
+    }
+
+    function sizeClass(size) {
+      if (size === '대형주') return 'badge-large';
+      if (size === '중형주') return 'badge-mid';
+      return 'badge-small';
+    }
+
+    async function lookupName() {
+      const val = form.value.code.trim();
+      if (!val) return;
+      nameLookingUp.value = true;
+      try {
+        if (/^\d+$/.test(val)) {
+          const code = val.padStart(6, '0');
+          form.value.code = code;
+          const res  = await fetch(`/api/stock-name?code=${code}`);
+          const data = await res.json();
+          if (data.name) form.value.name = data.name;
+          await fetchStockInfo(code, form.value.buy_date);
+        } else {
+          const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
+          const data = await res.json();
+          if (data.code) {
+            form.value.name = val;
+            form.value.code = data.code;
+            await fetchStockInfo(data.code, form.value.buy_date);
+          }
+        }
+      } catch { /* 무시 */ } finally {
+        nameLookingUp.value = false;
+      }
+    }
+
+
+    async function trailEditLookup() {
+      const val = trailEdit.value.code.trim();
+      if (!val) { trailEdit.value.name = ''; return; }
+      trailEditLookingUp.value = true;
+      try {
+        if (/^\d+$/.test(val)) {
+          const code = val.padStart(6, '0');
+          trailEdit.value.code = code;
+          const res  = await fetch(`/api/stock-name?code=${code}`);
+          const data = await res.json();
+          trailEdit.value.name = data.name || '';
+        } else {
+          const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
+          const data = await res.json();
+          if (data.code) { trailEdit.value.name = val; trailEdit.value.code = data.code; }
+        }
+      } catch { /* 무시 */ } finally {
+        trailEditLookingUp.value = false;
+      }
+    }
+
+    const TRAIL_TP = { '1': '추적대기', '2': '추적중', '3': '안전마진', 'L': '장기보유', 'P': '추적멈춤', '4': '완전매도' };
+    function trailTpLabel(tp) { return TRAIL_TP[tp] || tp || '-'; }
+
+    async function calculate() {
+      if (!canCalc.value) return;
+      loading.value = true;
+      try {
+        const code = form.value.code.trim().padStart(6, '0');
+        const res  = await fetch('/api/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...form.value, code })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '계산 오류'); return; }
+        preview.value = data;
+        alert.value.msg = '';
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function save() {
+      if (!preview.value) return;
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code:       preview.value.code,
+            name:       preview.value.name,
+            buy_price:  preview.value.buy_price,
+            loss_price: preview.value.loss_price,
+            buy_amount: form.value.buy_amount,
+            buy_date:   preview.value.buy_date,
+            buy_time:   form.value.buy_time,
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '저장 오류'); return; }
+        showAlert(data.message, data.inserted ? 'success' : 'warn', 5000);
+        preview.value = null;
+        await loadList();
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function loadList() {
+      listError.value = '';
+      try {
+        const res  = await fetch('/api/list');
+        const data = await res.json();
+        if (!res.ok) { listError.value = data.error || '목록 조회 오류'; return; }
+        records.value = data;
+      } catch (e) {
+        listError.value = '서버 연결 오류: ' + e.message;
+      }
+    }
+
+    async function deleteRecord(r) {
+      if (!confirm(`[${r.name}] ${fmtDay(r.trail_day)} 데이터를 삭제하시겠습니까?`)) return;
+      loading.value = true;
+      try {
+        const res = await fetch(`/api/delete/${r.trail_day}/${r.code}/${r.trail_tp}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '삭제 오류'); return; }
+        showAlert(`삭제 완료 (${data.deleted}건)`, 'success', 3000);
+        await loadList();
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function runSet() {
+      running.value = true;
+      runLog.value  = '[추적등록] 실행 중...';
+      try {
+        const res  = await fetch('/api/run-set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sim_date: simDate.value })
+        });
+        const data = await res.json();
+        if (!res.ok) { runLog.value = '[오류] ' + (data.error || '실행 실패'); return; }
+        runLog.value = (data.output || '') +
+          (data.error_output ? '\n[STDERR]\n' + data.error_output : '') ||
+          (data.success ? '완료 (출력 없음)' : `종료코드: ${data.returncode}`);
+        await loadList();
+      } catch (e) {
+        runLog.value = '[연결 오류] ' + e.message;
+      } finally {
+        running.value = false;
+      }
+    }
+
+    async function runTrail() {
+      running.value = true;
+      runLog.value  = '[추적실행] 실행 중... (완료까지 수 분 소요될 수 있습니다)';
+      try {
+        const res  = await fetch('/api/run-trail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sim_date: simDate.value })
+        });
+        const data = await res.json();
+        if (!res.ok) { runLog.value = '[오류] ' + (data.error || '실행 실패'); return; }
+        runLog.value = (data.output || '') +
+          (data.error_output ? '\n[STDERR]\n' + data.error_output : '') ||
+          (data.success ? '완료 (출력 없음)' : `종료코드: ${data.returncode}`);
+        await loadList();
+      } catch (e) {
+        runLog.value = '[연결 오류] ' + e.message;
+      } finally {
+        running.value = false;
+      }
+    }
+
+    async function updateTrail() {
+      if (!trailEdit.value.change_date) { showAlert('변경일자를 입력해주세요.'); return; }
+      const codeVal = (trailEdit.value.code || '').trim();
+      if (!codeVal) { showAlert('종목코드를 입력해주세요.'); return; }
+      if (!/^\d{6}$/.test(codeVal)) { showAlert('종목코드가 유효하지 않습니다. 종목명 입력 후 자동조회가 되지 않은 경우 코드를 직접 입력해주세요.'); return; }
+      const SET_KEYS = ['stop_price', 'target_price', 'exit_price', 'basic_price', 'basic_qty', 'trail_tp', 'proc_min'];
+      const hasSetField = SET_KEYS.some(k => { const v = trailEdit.value[k]; return v !== null && v !== '' && v !== 0; });
+      if (!hasSetField) { showAlert('변경할 값을 하나 이상 입력해주세요.'); return; }
+      const body = {};
+      for (const [k, v] of Object.entries(trailEdit.value)) {
+        if (k === 'name') continue;
+        if (v !== null && v !== '' && v !== 0) body[k] = v;
+      }
+      const fieldStr = Object.entries(CHANGE_LABELS)
+        .filter(([k]) => { const v = trailEdit.value[k]; return v !== null && v !== '' && v !== 0; })
+        .map(([k, lbl]) => {
+          const v = trailEdit.value[k];
+          return lbl + ': ' + (k === 'trail_tp' ? trailTpLabel(v) : (typeof v === 'number' ? v.toLocaleString('ko-KR') : v));
+        }).join(' | ');
+      const logEntry = {
+        time: new Date().toLocaleTimeString('ko-KR'),
+        date: trailEdit.value.change_date,
+        code: trailEdit.value.code,
+        name: trailEdit.value.name,
+        fieldStr,
+        success: false, message: '',
+      };
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/update-trail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '변경 오류'); return; }
+        logEntry.success = data.success;
+        logEntry.message = data.message;
+        updateLog.value.unshift(logEntry);
+        if (updateLog.value.length > 30) updateLog.value.pop();
+        showAlert(data.message, data.success ? 'success' : 'warn', 4000);
+        await loadList();
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    // ── 가져오기 / 전체저장 / 전체삭제 ──────────────────────────────
+    function triggerImport() {
+      if (fileInput.value) fileInput.value.click();
+    }
+
+    async function importCsv(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      loading.value = true;
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res  = await fetch('/api/import-csv', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '가져오기 오류'); return; }
+        showAlert(data.message, 'success', 5000);
+        await loadList();
+        loadDashboard();
+      } catch (e) {
+        showAlert('가져오기 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+        event.target.value = '';
+      }
+    }
+
+    async function saveAll() {
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/save-all', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '전체저장 오류'); return; }
+        const detail = (data.results || [])
+          .map(r => `${r.table}: ${r.inserted}건 → ${r.file}`)
+          .join('\n');
+        showAlert(data.message + (detail ? '\n' + detail : ''), 'success', 7000);
+      } catch (e) {
+        showAlert('전체저장 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function deleteAll() {
+      if (!confirm(
+        '시뮬레이션 데이터 전체를 삭제합니다.\n\n' +
+        '· trading_trail_simul\n' +
+        '· dly_trading_balance_simul\n' +
+        '· dly_acct_balance_simul\n\n' +
+        '삭제 전에 전체저장을 먼저 실행하시길 권장합니다.\n계속하시겠습니까?'
+      )) return;
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/delete-all', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '전체삭제 오류'); return; }
+        showAlert(data.message, 'success', 4000);
+        dashboard.value = null;
+        await loadList();
+        loadDashboard();
+      } catch (e) {
+        showAlert('전체삭제 오류: ' + e.message);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    async function loadDashboard() {
+      if (!simDate.value) return;
+      try {
+        const res  = await fetch(`/api/dashboard?date=${simDate.value}`);
+        const data = await res.json();
+        dashboard.value = (!res.ok || data.error || !data.acct) ? null : data;
+      } catch {
+        dashboard.value = null;
+      }
+    }
+
+    function resetForm() {
+      form.value = { code: '', name: '', buy_price: null, loss_price: null, buy_amount: null, buy_date: today, buy_time: '' };
+      preview.value   = null;
+      stockInfo.value = null;
+      alert.value.msg = '';
+    }
+
+    function fmt(n)     { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
+    function fmtDay(d) {
+      if (!d) return '-';
+      const s = String(d).replace(/-/g, '');
+      return s.length === 8 ? `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6)}` : d;
+    }
+
+    watch(simDate, (d) => { if (d) loadDashboard(); });
+
+    onMounted(async () => {
+      await loadList();
+      loadDashboard();
+    });
+
+    return {
+      form, preview, records, loading, nameLookingUp, listError, alert,
+      simDate, running, runLog,
+      trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
+      stockInfo, dashboard,
+      sellForm, sellPreview, sellLookingUp, canSellCalc,
+      trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
+      loadActiveStocks, selectActiveStock,
+      lookupSellName, calculateSell, executeSell,
+      canCalc, lookupName, trailEditLookup, trailTpLabel,
+      sizeClass, fetchStockInfo, loadDashboard,
+      calculate, save, loadList, deleteRecord, resetForm,
+      runSet, runTrail, updateTrail, fmt, fmtDay,
+      fileInput, triggerImport, importCsv, saveAll, deleteAll,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
