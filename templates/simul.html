@@ -404,6 +404,14 @@
     }
     .btn-import     { background: #0077b6; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
     .btn-save-all   { background: #2dc653; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+    .download-panel { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                      background:#e8f5e9; border:1px solid #a5d6a7; border-radius:8px;
+                      padding:10px 14px; margin:6px 0; }
+    .download-panel-title { font-weight:600; font-size:.85rem; color:#2e7d32; white-space:nowrap; }
+    .download-link  { font-size:.82rem; color:#1565c0; text-decoration:underline; white-space:nowrap; }
+    .download-link:hover { color:#0d47a1; }
+    .download-close { margin-left:auto; background:none; border:none; cursor:pointer;
+                      font-size:1rem; color:#888; line-height:1; }
     .btn-delete-all { background: #e63946; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
   </style>
 </head>
@@ -500,6 +508,17 @@
 
   <!-- 알림 -->
   <div v-if="alert.msg" :class="['alert', alert.type]">{{ alert.msg }}</div>
+
+  <!-- 전체저장 다운로드 패널 -->
+  <div v-if="downloadFiles.length" class="download-panel">
+    <span class="download-panel-title">📥 저장된 파일 다운로드</span>
+    <a v-for="r in downloadFiles" :key="r.file"
+       :href="r.download_url" download
+       class="download-link">
+      {{ r.table }} ({{ r.inserted }}건)
+    </a>
+    <button class="download-close" @click="downloadFiles = []">✕</button>
+  </div>
 
   <!-- 입력 폼 -->
   <div class="card" v-if="!preview">
@@ -958,6 +977,7 @@ createApp({
     const nameLookingUp = ref(false);
     const listError     = ref('');
     const alert         = ref({ msg: '', type: 'error' });
+    const downloadFiles = ref([]);
     const updateLog     = ref([]);
     const stockInfo     = ref(null);
     const dashboard     = ref(null);
@@ -1403,10 +1423,8 @@ createApp({
         const res  = await fetch('/api/save-all', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '전체저장 오류'); return; }
-        const detail = (data.results || [])
-          .map(r => `${r.table}: ${r.inserted}건 → ${r.file}`)
-          .join('\n');
-        showAlert(data.message + (detail ? '\n' + detail : ''), 'success', 7000);
+        downloadFiles.value = data.results || [];
+        showAlert(data.message, 'success', 5000);
       } catch (e) {
         showAlert('전체저장 오류: ' + e.message);
       } finally {
@@ -1471,7 +1489,7 @@ createApp({
     });
 
     return {
-      form, preview, records, loading, nameLookingUp, listError, alert,
+      form, preview, records, loading, nameLookingUp, listError, alert, downloadFiles,
       simDate, running, runLog,
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,

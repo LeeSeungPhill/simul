@@ -891,12 +891,32 @@ def api_save_all():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'message': '전체저장 완료', 'results': results, 'export_dir': _EXPORT_DIR})
+        for r in results:
+            r['download_url'] = f"/api/download/{r['file']}"
+        return jsonify({'message': '전체저장 완료', 'results': results})
     except Exception as e:
         if conn:
             try: conn.rollback()
             except: pass
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/download/<path:filename>', methods=['GET'])
+def api_download(filename):
+    """simul_exports 디렉터리의 CSV 파일 다운로드."""
+    return send_from_directory(_EXPORT_DIR, filename, as_attachment=True)
+
+
+@app.route('/api/download-list', methods=['GET'])
+def api_download_list():
+    """저장된 CSV 파일 목록 반환."""
+    if not os.path.isdir(_EXPORT_DIR):
+        return jsonify([])
+    files = sorted(
+        [f for f in os.listdir(_EXPORT_DIR) if f.endswith('.csv')],
+        reverse=True
+    )
+    return jsonify([{'file': f, 'download_url': f'/api/download/{f}'} for f in files])
 
 
 @app.route('/api/delete-all', methods=['POST'])
