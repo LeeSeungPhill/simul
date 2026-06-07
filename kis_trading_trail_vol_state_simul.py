@@ -1242,6 +1242,10 @@ def _update_dly_trading_balance_simul(trade_date: str, conn,
     """
     try:
         cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM public.dly_trading_balance_simul WHERE balance_day = %s",
+            (trade_date,)
+        )
         # 종목별 최신 레코드: 보유단가·수량·매도수량만 조회 (value 계산은 종가 기반)
         cur.execute(f"""
             WITH ranked AS (

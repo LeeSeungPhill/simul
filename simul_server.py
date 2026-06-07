@@ -948,7 +948,8 @@ def api_active_stocks():
         conn = get_conn()
         cur  = conn.cursor()
         cur.execute("""
-            SELECT code, name, trail_tp, basic_price, basic_qty
+            SELECT code, name, trail_tp, basic_price, basic_qty,
+                   stop_price, target_price, exit_price
             FROM trading_trail_simul
             WHERE acct_no = 'SIMUL' AND trail_day = %s
               AND trail_tp IN ('1','2','L')
@@ -958,9 +959,16 @@ def api_active_stocks():
         cur.close()
         conn.close()
         return jsonify([
-            {'code': r[0], 'name': r[1], 'trail_tp': r[2],
-             'basic_price': int(r[3]) if r[3] else 0,
-             'basic_qty':   int(r[4]) if r[4] else 0}
+            {
+                'code':         r[0],
+                'name':         r[1],
+                'trail_tp':     r[2],
+                'basic_price':  int(r[3]) if r[3] else 0,
+                'basic_qty':    int(r[4]) if r[4] else 0,
+                'stop_price':   int(r[5]) if r[5] else None,
+                'target_price': int(r[6]) if r[6] else None,
+                'exit_price':   int(r[7]) if r[7] else None,
+            }
             for r in rows
         ])
     except Exception as e:

@@ -404,6 +404,26 @@
     }
     .btn-import     { background: #0077b6; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
     .btn-save-all   { background: #2dc653; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+    .selected-stock-info { background:#f7f8ff; border:1px solid #e8eaff; border-radius:8px;
+                           padding:12px 14px; margin-bottom:16px; }
+    .ssi-title  { font-size:.88rem; color:#333; margin-bottom:10px; }
+    .ssi-code     { color:#888; font-size:.82rem; margin-left:4px; font-weight:400; }
+    .ssi-trail-tp { display:inline-block; margin-left:8px; padding:1px 7px;
+                    border-radius:10px; font-size:.72rem; font-weight:700;
+                    background:#e8eaff; color:#5c6bc0; vertical-align:middle; }
+    .ssi-grid   { display:flex; gap:0; }
+    .ssi-item   { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;
+                  padding:0 10px; border-left:1px solid #e0e4f0; }
+    .ssi-item:first-child { padding-left:0; border-left:none; }
+    .ssi-lbl    { font-size:.70rem; color:#999; font-weight:600; white-space:nowrap;
+                  overflow:hidden; text-overflow:ellipsis; }
+    .ssi-val    { font-size:.83rem; color:#333; font-weight:700; white-space:nowrap;
+                  overflow:hidden; text-overflow:ellipsis; }
+    .ssi-pos    { color:#2dc653; }
+    .ssi-neg    { color:#e63946; }
+    .ssi-target { color:#2dc653; }
+    .ssi-stop   { color:#e63946; }
+    .ssi-exit   { color:#f4a261; }
     .download-panel { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
                       background:#e8f5e9; border:1px solid #a5d6a7; border-radius:8px;
                       padding:10px 14px; margin:6px 0; }
@@ -713,10 +733,34 @@
     </template>
 
     <!-- 선택된 종목 정보 -->
-    <div v-if="selectedStock" style="background:#f7f8ff;border-radius:8px;padding:10px 14px;font-size:.84rem;color:#444;margin-bottom:16px;border:1px solid #e8eaff">
-      <b>{{ selectedStock.name }}</b> ({{ selectedStock.code }})
-      &nbsp;·&nbsp; 보유단가 <b>{{ fmt(selectedStock.basic_price) }}원</b>
-      &nbsp;·&nbsp; 보유수량 <b>{{ fmt(selectedStock.basic_qty) }}주</b>
+    <div v-if="selectedStock" class="selected-stock-info">
+      <div class="ssi-title">
+        <b>{{ selectedStock.name }}</b>
+        <span class="ssi-code">({{ selectedStock.code }})</span>
+        <span class="ssi-trail-tp">{{ trailTpLabel(selectedStock.trail_tp) }}</span>
+      </div>
+      <div class="ssi-grid">
+        <div class="ssi-item">
+          <span class="ssi-lbl">보유단가</span>
+          <span class="ssi-val">{{ fmt(selectedStock.basic_price) }}원</span>
+        </div>
+        <div class="ssi-item">
+          <span class="ssi-lbl">보유수량</span>
+          <span class="ssi-val">{{ fmt(selectedStock.basic_qty) }}주</span>
+        </div>
+        <div class="ssi-item">
+          <span class="ssi-lbl">목표가</span>
+          <span class="ssi-val ssi-target">{{ selectedStock.target_price != null ? fmt(selectedStock.target_price) + '원' : '-' }}</span>
+        </div>
+        <div class="ssi-item">
+          <span class="ssi-lbl">이탈가</span>
+          <span class="ssi-val ssi-stop">{{ selectedStock.stop_price != null ? fmt(selectedStock.stop_price) + '원' : '-' }}</span>
+        </div>
+        <div class="ssi-item">
+          <span class="ssi-lbl">최종이탈가</span>
+          <span class="ssi-val ssi-exit">{{ selectedStock.exit_price != null ? fmt(selectedStock.exit_price) + '원' : '-' }}</span>
+        </div>
+      </div>
     </div>
 
     <!-- 매도 입력 -->
