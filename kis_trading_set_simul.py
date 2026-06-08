@@ -337,7 +337,7 @@ try:
             """, (SIMUL_DLY_ACCT, prev_date))
             pt_row        = cur_dly.fetchone()
             prev_excc     = int(pt_row[0]) if pt_row else None
-            prev_pchs     = int(pt_row[1]) if pt_row else None
+            prev_pchs     = int(pt_row[1]) if pt_row else 0
             prev_tot      = int(pt_row[2]) if pt_row else None
 
             # 자본기준: dly_acct_balance_simul 의 prev_excc(전전일 예수금) 사용 (없으면 INITIAL_CAPITAL 폴백)
