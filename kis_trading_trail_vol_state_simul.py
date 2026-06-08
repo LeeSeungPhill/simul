@@ -822,9 +822,10 @@ def get_kis_1min_from_datetime_simul(
                                 _w_stk_mkt       = _stk_mkt_pre
                                 _w_allow_ratio   = _calc_invest_ratio(_w_mkt_data, _w_stk_mkt)
                                 _w_total_invested = _get_total_invested(trade_date, conn)
-                                _w_allowed_invest = int(_w_mkt_data.get('dnca_tot_amt', '') * _w_allow_ratio / 100)
+                                _w_dnca_tot       = _w_mkt_data.get('dnca_tot_amt') or 0
+                                _w_allowed_invest = int(_w_dnca_tot * _w_allow_ratio / 100)
                                 _w_excess_invest  = _w_total_invested - _w_allowed_invest
-                                _w_invest_pct     = round(_w_total_invested / _w_mkt_data.get('dnca_tot_amt', '') * 100, 1)
+                                _w_invest_pct     = round(_w_total_invested / _w_dnca_tot * 100, 1) if _w_dnca_tot > 0 else 0
                                 _w_mid_key   = 'kospi_mid'  if _w_stk_mkt == 'KOSPI' else 'kosdak_mid'
                                 _w_long_key  = 'kospi_long' if _w_stk_mkt == 'KOSPI' else 'kosdak_long'
                                 _w_mid_str   = '상승' if _w_mkt_data.get(_w_mid_key)  == '03' else '하락'
@@ -852,9 +853,10 @@ def get_kis_1min_from_datetime_simul(
                         _stk_mkt        = _get_stock_market_type(stock_code, access_token, app_key, app_secret)
                         _allow_ratio    = _calc_invest_ratio(_mkt_data, _stk_mkt)
                         _total_invested = _get_total_invested(trade_date, conn)
-                        _allowed_invest = int(_mkt_data.get('dnca_tot_amt', '') * _allow_ratio / 100)
+                        _dnca_tot       = _mkt_data.get('dnca_tot_amt') or 0
+                        _allowed_invest = int(_dnca_tot * _allow_ratio / 100)
                         _excess_invest  = _total_invested - _allowed_invest
-                        _invest_pct     = round(_total_invested / _mkt_data.get('dnca_tot_amt', '') * 100, 1)
+                        _invest_pct     = round(_total_invested / _dnca_tot * 100, 1) if _dnca_tot > 0 else 0
                         _mid_key        = 'kospi_mid'  if _stk_mkt == 'KOSPI' else 'kosdak_mid'
                         _long_key       = 'kospi_long' if _stk_mkt == 'KOSPI' else 'kosdak_long'
                         _mid_str        = '상승' if _mkt_data.get(_mid_key)  == '03' else '하락'
