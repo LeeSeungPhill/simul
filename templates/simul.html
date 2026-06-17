@@ -570,6 +570,10 @@
           💡 권장 매수금액: <b>{{ fmt(stockInfo.amt_min) }}원 ~ {{ fmt(stockInfo.amt_max) }}원</b>
           <span style="color:#888;font-size:.78rem;margin-left:6px">({{ stockInfo.amt_desc }})</span>
         </div>
+        <div class="amt-suggest" v-if="stockInfo.suggest_buy_amt">
+          💰 제안 매수금액: <b>{{ stockInfo.suggest_buy_amt_str }}</b>
+          <span style="color:#888;font-size:.78rem;margin-left:6px">(시장비율 {{ stockInfo.suggest_loss_market_ratio }}%<span v-if="stockInfo.suggest_loss_base_dt">, 기준일 {{ stockInfo.suggest_loss_base_dt }}</span>)</span>
+        </div>
         <div class="amt-suggest" v-if="stockInfo.suggest_loss_amt">
           ✂️ 제안 손절금액: <b>{{ stockInfo.suggest_loss_amt_str }}</b>
           <span style="color:#888;font-size:.78rem;margin-left:6px">(시장비율 {{ stockInfo.suggest_loss_market_ratio }}%<span v-if="stockInfo.suggest_loss_base_dt">, 기준일 {{ stockInfo.suggest_loss_base_dt }}</span>)</span>

@@ -776,11 +776,19 @@ def stock_info():
         except Exception:
             pass
 
+        suggest_buy_amt = int(
+            max(amt_min, min(amt_max,
+                amt_min + (suggest_loss_market_ratio / 100) * (amt_max - amt_min)
+            ))
+        ) if suggest_loss_market_ratio > 0 else amt_min
+
         return jsonify({
             'code': code, 'market': market, 'size': size,
             'industry': industry, 'mktcap': mktcap,
             'mktcap_str': f"{mktcap:,}억원" if mktcap else '',
             'amt_min': amt_min, 'amt_max': amt_max, 'amt_desc': amt_desc,
+            'suggest_buy_amt': suggest_buy_amt,
+            'suggest_buy_amt_str': f"{suggest_buy_amt:,}원",
             'suggest_loss_amt': suggest_loss_amt,
             'suggest_loss_amt_str': f"{suggest_loss_amt:,}원",
             'suggest_loss_market_ratio': suggest_loss_market_ratio,
