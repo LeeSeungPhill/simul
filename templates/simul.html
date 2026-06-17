@@ -601,12 +601,28 @@
       </div>
 
       <div class="field">
-        <label>매수금액 (원) *</label>
+        <label>
+          매수금액 (원) *
+          <label style="font-weight:normal;margin-left:10px;cursor:pointer">
+            <input type="checkbox" v-model="useLossAmt" style="margin-right:3px;cursor:pointer" />
+            손절금액 기반 자동계산
+          </label>
+        </label>
+        <input
+          v-model.number="form.loss_input_amt"
+          v-if="useLossAmt"
+          type="number"
+          min="1"
+          placeholder="손절금액 (예) 150000"
+          style="margin-bottom:5px"
+        />
         <input
           v-model.number="form.buy_amount"
           type="number"
           min="1"
           placeholder="예) 5000000"
+          :disabled="useLossAmt"
+          :style="useLossAmt ? 'background:#f0f4ff;color:#4361ee;font-weight:600' : ''"
         />
       </div>
 
@@ -1016,8 +1032,10 @@ createApp({
 
     const form = ref({
       code: '', name: '', buy_price: null, loss_price: null,
-      buy_amount: null, buy_date: today, buy_time: ''
+      buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: ''
     });
+
+    const useLossAmt = ref(false);
 
     const preview       = ref(null);
     const records       = ref([]);
@@ -1182,6 +1200,22 @@ createApp({
       const e = trailEdit.value.exit_price;
       const q = trailEdit.value.basic_qty;
       return (p && e && q) ? (p - e) * q : null;
+    });
+
+    watch(
+      () => [useLossAmt.value, form.value.loss_input_amt, form.value.buy_price, form.value.loss_price],
+      ([use, lossAmt, buyPrice, lossPrice]) => {
+        if (!use) return;
+        if (lossAmt > 0 && buyPrice > 0 && lossPrice > 0 && buyPrice > lossPrice) {
+          form.value.buy_amount = Math.round(buyPrice * lossAmt / (buyPrice - lossPrice));
+        } else {
+          form.value.buy_amount = null;
+        }
+      }
+    );
+
+    watch(useLossAmt, (use) => {
+      if (!use) form.value.buy_amount = null;
     });
 
     const canCalc = computed(() =>
@@ -1516,10 +1550,11 @@ createApp({
     }
 
     function resetForm() {
-      form.value = { code: '', name: '', buy_price: null, loss_price: null, buy_amount: null, buy_date: today, buy_time: '' };
-      preview.value   = null;
-      stockInfo.value = null;
-      alert.value.msg = '';
+      form.value    = { code: '', name: '', buy_price: null, loss_price: null, buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: '' };
+      useLossAmt.value = false;
+      preview.value    = null;
+      stockInfo.value  = null;
+      alert.value.msg  = '';
     }
 
     function fmt(n)     { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
@@ -1545,6 +1580,7 @@ createApp({
       trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
       loadActiveStocks, selectActiveStock,
       lookupSellName, calculateSell, executeSell,
+      useLossAmt,
       canCalc, lookupName, trailEditLookup, trailTpLabel,
       sizeClass, fetchStockInfo, loadDashboard,
       calculate, save, loadList, deleteRecord, resetForm,
