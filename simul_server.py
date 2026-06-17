@@ -131,7 +131,6 @@ def preview():
         if buy_price <= loss_price:
             return jsonify({'error': f'매수가({buy_price:,})가 이탈가({loss_price:,}) 이하입니다.'}), 400
 
-        # reservebot.py 3971~3980 동일 로직
         loss_rate     = round((100 - (loss_price / buy_price) * 100) * -1, 2)
         amt_buy_qty   = int(round(buy_amount / buy_price))
         amt_buy_amt   = buy_price * amt_buy_qty
@@ -736,8 +735,8 @@ def stock_info():
         else:
             amt_min, amt_max, amt_desc = 500000, 2000000, '변동성 높음, 소액 분산 권장'
 
-        # 손절금액 제안: market_ratio 기준 선형보간 (10만~40만원)
-        suggest_loss_amt          = 100_000
+        # 손절금액 제안: market_ratio 기준 선형보간 (5만~25만원)
+        suggest_loss_amt          = 50_000
         suggest_loss_market_ratio = 0
         suggest_loss_base_dt      = ''
         try:
@@ -769,8 +768,8 @@ def stock_info():
                 suggest_loss_market_ratio = float(mr_row[0])
                 suggest_loss_base_dt      = mr_row[1]
                 suggest_loss_amt = int(
-                    max(100_000, min(400_000,
-                        100_000 + (suggest_loss_market_ratio / 100) * 300_000
+                    max(50_000, min(250_000,
+                        50_000 + (suggest_loss_market_ratio / 100) * 200_000
                     ))
                 )
         except Exception:
