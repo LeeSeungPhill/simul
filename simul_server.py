@@ -753,7 +753,7 @@ def stock_info():
                     SELECT market_ratio, %s AS dt FROM "stockFundMng_stock_fund_mng" WHERE acct_no = '74346047' 
                     UNION ALL
                     SELECT market_ratio, dt FROM dly_acct_balance WHERE acct = '74346047' AND dt = %s
-                    ORDER BY dt DESC LIMIT 1
+                    ORDER BY dt LIMIT 1
                 """, (prev_biz, prev_biz,))
             else:
                 # buy_date 미입력 시 최신 레코드
