@@ -744,11 +744,9 @@ def stock_info():
             cur_mr  = conn_mr.cursor()
 
             if len(buy_date) == 8:
-                # buy_date 전영업일 기준 market_ratio 조회
+                # buy_date 영업일 기준 market_ratio 조회
                 business_day = f"{buy_date[:4]}-{buy_date[4:6]}-{buy_date[6:]}"
-                prev_biz = get_previous_business_day(
-                    (datetime.strptime(business_day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-                )
+                prev_biz = get_previous_business_day(datetime.strptime(business_day, "%Y-%m-%d"))
                 cur_mr.execute("""
                     SELECT market_ratio, %s AS dt FROM "stockFundMng_stock_fund_mng" WHERE acct_no = '74346047' 
                     UNION ALL
