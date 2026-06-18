@@ -750,13 +750,13 @@ def stock_info():
                     (datetime.strptime(business_day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
                 )
                 cur_mr.execute("""
-                    SELECT market_ratio, dt FROM dly_acct_balance_simul
+                    SELECT market_ratio, dt FROM "stockFundMng_stock_fund_mng"
                     WHERE acct = '74346047' AND dt = %s
                 """, (prev_biz,))
             else:
                 # buy_date 미입력 시 최신 레코드
                 cur_mr.execute("""
-                    SELECT market_ratio, dt FROM dly_acct_balance_simul
+                    SELECT market_ratio, dt FROM "stockFundMng_stock_fund_mng"
                     WHERE acct = '74346047' AND market_ratio > 0
                     ORDER BY dt DESC LIMIT 1
                 """)
