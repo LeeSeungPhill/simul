@@ -754,12 +754,12 @@ def stock_info():
                     UNION ALL
                     SELECT market_ratio, dt FROM dly_acct_balance WHERE acct = '74346047' AND dt = %s
                     ORDER BY dt LIMIT 1
-                """, (prev_biz, prev_biz,))
+                """, (datetime.now().strftime('%Y%m%d'), prev_biz,))
             else:
                 # buy_date 미입력 시 최신 레코드
                 cur_mr.execute("""
                     SELECT market_ratio, %s AS dt FROM "stockFundMng_stock_fund_mng" WHERE acct_no = '74346047' 
-                """, (prev_biz,))
+                """, (datetime.now().strftime('%Y%m%d'),))
 
             mr_row = cur_mr.fetchone()
             cur_mr.close()
