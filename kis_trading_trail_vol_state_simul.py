@@ -1072,7 +1072,7 @@ def get_kis_1min_from_datetime_simul(
                                                         "tenmin_vol": 0, "tenmin_avg_vol": 0,
                                                         "sell_label": "",
                                                     })
-                                    if breakdown_wait_1["tenmin_low"] is not None and stop_price < breakdown_wait_1["tenmin_low"]:
+                                    if breakdown_wait_1["tenmin_low"] is not None and low_price < breakdown_wait_1["tenmin_low"]:
                                         # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
                                         if _short_market_down:
                                             order_price = close_price
@@ -1198,7 +1198,18 @@ def get_kis_1min_from_datetime_simul(
                                         sell_price   = get_valid_sell_price(max(tenmin_close, peak_sell_threshold))
                                         sell_reason  = f"고점({tenmin_state['peak_high']:,})원 되돌림 임계({peak_sell_threshold:,})원 종가 이탈"
 
-                                # 조건 C: 연속 이탈
+                                # 조건 C-1: 기준봉 저가 이탈 + 안전마진 초과 + 이탈가/최종이탈가 이탈 → 즉시 매도
+                                # 거래량·연속이탈 조건 없이 이탈가 기준으로 즉시 매도 처리
+                                if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close > safety_margin:
+                                    is_exit_breach = exit_price and tenmin_close <= int(exit_price)
+                                    is_stop_breach = tenmin_close <= int(stop_price)
+                                    if is_exit_breach or is_stop_breach:
+                                        sell_trigger = True
+                                        sell_price = get_valid_sell_price(max(tenmin_close, safety_margin))
+                                        sell_reason = f"이탈가({stop_price:,})원 이탈 기준봉 저가({tenmin_state['base_low']:,})원 이탈 (매도가:{sell_price:,})"
+
+                                # 조건 C-2: 기준봉 저가를 종가로 이탈 + 안전마진 이상 → 연속 이탈 판단
+                                # 거래량 초과 OR 연속 이탈 시 매도 (저거래량 지속 하락 방어)
                                 consecutive_breaks = ((1 if tenmin_close < tenmin_state["base_low"] else 0)
                                                     + (1 if prev_close_10 < tenmin_state["base_low"] else 0))
                                 late_day_thresh    = 1 if current_time >= dt_time(14, 30) else 2
