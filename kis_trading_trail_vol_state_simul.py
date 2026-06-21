@@ -750,7 +750,11 @@ def get_kis_1min_from_datetime_simul(
                                                 + f" → 10분봉저가({breakdown_wait['tenmin_low']:,}) 이탈 확정")
                             sell_signal_type = breakdown_wait["signal_type"]
                             effective_stop   = breakdown_wait["effective_stop"]
-                            order_price      = effective_stop if close_price < effective_stop else close_price
+                            # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
+                            if _short_market_down:
+                                order_price = close_price
+                            else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 현재가가 이탈가 아래면 이탈가 otherwise 현재가
+                                order_price = effective_stop if close_price < effective_stop else close_price
                     else:
                         sell_trigger = False
 
@@ -784,20 +788,28 @@ def get_kis_1min_from_datetime_simul(
                             if not _cond_b_capable:
                                 fixed_stop = int(stop_price) if stop_price else 0
                                 if fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
-                                    breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
+                                     # 시장 단기 하락인 경우 매도 진행
+                                    if _short_market_down:
+                                        breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
                                                            "tenmin_low": None, "tenmin_vol_ok": None,
                                                            "reason": f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%]",
                                                            "signal_type": "FIXED_STOP",
-                                                           "effective_stop": fixed_stop, "order_price": 0})
-                                     # 시장 단기 하락인 경우 매도 진행
-                                    if _short_market_down:
+                                                           "effective_stop": fixed_stop, "order_price": close_price})
                                         sell_trigger = True
+                                        sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%] (매도가:{close_price:,})"
+                                        sell_signal_type = "FIXED_STOP"
+                                        order_price      = close_price
 
                                         if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
                                             breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 15%달성·수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 [시장 약세] 매도 진행")
                                     else:
+                                        breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
+                                                           "tenmin_low": None, "tenmin_vol_ok": None,
+                                                           "reason": f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%]",
+                                                           "signal_type": "FIXED_STOP",
+                                                           "effective_stop": fixed_stop, "order_price": 0})
                                         if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
                                             breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
@@ -805,19 +817,27 @@ def get_kis_1min_from_datetime_simul(
                     else:
                         fixed_stop = int(stop_price) if stop_price else 0
                         if fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
-                            breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
+                            # 시장 단기 하락인 경우 매도 진행
+                            if _short_market_down:
+                                breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
                                                    "tenmin_low": None, "tenmin_vol_ok": None,
                                                    "reason": f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%]",
                                                    "signal_type": "FIXED_STOP",
-                                                   "effective_stop": fixed_stop, "order_price": 0})
-                            # 시장 단기 하락인 경우 매도 진행
-                            if _short_market_down:
+                                                   "effective_stop": fixed_stop, "order_price": close_price})
                                 sell_trigger = True
+                                sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%] (매도가:{close_price:,})"
+                                sell_signal_type = "FIXED_STOP"
+                                order_price      = close_price
                                 if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
                                     breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 [시장 약세] 매도 진행")
                             else:
+                                breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
+                                                   "tenmin_low": None, "tenmin_vol_ok": None,
+                                                   "reason": f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%]",
+                                                   "signal_type": "FIXED_STOP",
+                                                   "effective_stop": fixed_stop, "order_price": 0})                                
                                 if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
                                     breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
