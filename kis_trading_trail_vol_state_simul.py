@@ -1053,7 +1053,11 @@ def get_kis_1min_from_datetime_simul(
                                                         "sell_label": "",
                                                     })
                                     if breakdown_wait_1["tenmin_low"] is not None and stop_price < breakdown_wait_1["tenmin_low"]:
-                                        order_price  = int(stop_price) if int(stop_price) > close_price else close_price
+                                        # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
+                                        if _short_market_down:
+                                            order_price = close_price
+                                        else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 현재가가 이탈가 아래면 이탈가 otherwise 현재가
+                                            order_price = int(stop_price) if close_price < int(stop_price) else close_price
                                         trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
                                         i_trail_plan = trail_plan if trail_plan else "100"
                                         trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
@@ -1186,7 +1190,11 @@ def get_kis_1min_from_datetime_simul(
                                     sell_reason  = f"기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈"
 
                                 if sell_trigger:
-                                    order_price  = sell_price if sell_price > tenmin_state['base_low'] else tenmin_state['base_low']
+                                     # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
+                                    if _short_market_down:
+                                        order_price = sell_price
+                                    else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 기준봉저가가 매도가 아래면 매도가 otherwise 기준봉저가
+                                        order_price = sell_price if tenmin_state['base_low'] < sell_price else tenmin_state['base_low']
                                     trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
                                     i_trail_plan = trail_plan if trail_plan else "50"
                                     trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
