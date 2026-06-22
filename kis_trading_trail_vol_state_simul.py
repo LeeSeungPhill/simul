@@ -1022,11 +1022,6 @@ def get_kis_1min_from_datetime_simul(
                 current_time    = row["dt"].time()
 
                 if high_price > low_price:
-                    if trade_date.endswith("0102") or trade_date.endswith("1119"):
-                        pre_market = current_time < datetime.strptime("10:10", "%H:%M").time()
-                    else:
-                        pre_market = current_time < datetime.strptime("09:10", "%H:%M").time()
-
                     # 상한가 절반 매도
                     if high_price >= upper_limit:
                         i_trail_plan = "50"
@@ -1048,241 +1043,240 @@ def get_kis_1min_from_datetime_simul(
                         return signals
 
                     # 기준봉 미생성
-                    if pre_market is None: 
-                        if tenmin_state["base_low"] is None:
-                            chk_vol = volumn if volumn else 0
-                            if trail_tp == '1':
-                                # breakdown_wait_1 대기 처리
-                                if breakdown_wait_1["active"]:
-                                    current_10min_key_1 = get_10min_key(row["dt"])
-                                    if current_10min_key_1 != breakdown_wait_1["tenmin_key"]:
-                                        if breakdown_wait_1["tenmin_low"] is None:
-                                            trigger_key_1   = breakdown_wait_1["tenmin_key"]
-                                            trigger_bars_1  = df[df["dt"].apply(get_10min_key) == trigger_key_1]
-                                            if not trigger_bars_1.empty:
-                                                breakdown_wait_1["tenmin_low"]  = trigger_bars_1["저가"].astype(int).min()
-                                                vol_ok_1, cur_v1, avg_v1 = _is_tenmin_vol_surge_1(trigger_key_1)
-                                                breakdown_wait_1["tenmin_vol_ok"]    = vol_ok_1
-                                                breakdown_wait_1["tenmin_vol"]       = cur_v1
-                                                breakdown_wait_1["tenmin_avg_vol"]   = avg_v1
-                                                if not vol_ok_1:
-                                                    breakdown_wait_1.update({
-                                                        "active": False, "tenmin_key": None,
-                                                        "tenmin_low": None, "tenmin_vol_ok": None,
-                                                        "tenmin_vol": 0, "tenmin_avg_vol": 0,
-                                                        "sell_label": "",
-                                                    })
-                                    if breakdown_wait_1["tenmin_low"] is not None and low_price < breakdown_wait_1["tenmin_low"]:
-                                        # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
-                                        if _short_market_down:
-                                            order_price = close_price
-                                        else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 현재가가 이탈가 아래면 이탈가 otherwise 현재가
-                                            order_price = int(stop_price) if close_price < int(stop_price) else close_price
-                                        trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
-                                        i_trail_plan = trail_plan if trail_plan else "100"
-                                        trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
-                                        trail_amt    = order_price * trail_qty
-                                        u_basic_qty  = basic_qty - trail_qty
-                                        u_basic_amt  = basic_price * u_basic_qty
-                                        sell_label   = breakdown_wait_1["sell_label"]
-                                        update_simul_close(
-                                            nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
-                                            u_basic_qty, u_basic_amt, acct_no, 
-                                            stock_code, stock_name, start_date, start_time, "4",
-                                            row['시간'].replace(':', '') + '00', sell_label, conn
-                                        )
-                                        signals.append({"signal_type": "BREAKDOWN_BEFORE_BREAKOUT",
-                                                        "종목코드": stock_code, "발생일자": row["일자"],
-                                                        "발생시간": row["시간"], "이탈가격": breakdown_check})
-                                        return signals
-
-                                else:
-                                    if breakdown_check <= exit_price and acml_vol > chk_vol:
-                                        current_10min_key_1 = get_10min_key(row["dt"])
-                                        breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
-                                                                "tenmin_low": None, "tenmin_vol_ok": None,
-                                                                "sell_label": "손절매도"})
-                                        if current_10min_key_1.strftime("%Y%m%d%H%M") != breakdown_wait_1["last_alert_tenmin_key"]:
-                                            breakdown_wait_1["last_alert_tenmin_key"] = current_10min_key_1.strftime("%Y%m%d%H%M")
-                                            _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
-                                            print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 최종이탈가({exit_price:,})원 이탈 대기")
-
-                                    elif breakdown_check <= stop_price and acml_vol > chk_vol:
-                                        current_10min_key_1 = get_10min_key(row["dt"])
-                                        breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
-                                                                "tenmin_low": None, "tenmin_vol_ok": None,
-                                                                "sell_label": "이탈매도"})
-                                        if current_10min_key_1.strftime("%Y%m%d%H%M") != breakdown_wait_1["last_alert_tenmin_key"]:
-                                            breakdown_wait_1["last_alert_tenmin_key"] = current_10min_key_1.strftime("%Y%m%d%H%M")
-                                            _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
-                                            print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 이탈가({stop_price:,})원 이탈 대기")
-
-                            # 목표가 돌파 → 기준봉 생성
-                            if breakout_check >= target_price:
-                                base_key    = get_completed_10min_key(row["dt"])
-                                base_10min  = df[df["dt"].apply(get_10min_key) == base_key]
-                                if base_10min.empty:
-                                    continue
-                                tenmin_state.update({
-                                    "base_low":  base_10min["저가"].astype(int).min(),
-                                    "base_high": base_10min["고가"].astype(int).max(),
-                                    "base_vol":  base_10min["거래량"].astype(int).sum(),
-                                    "base_key":  base_key,
-                                })
-                                if verbose:
-                                    print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
-                                        f" 목표가 {target_price:,}원 돌파 기준봉 설정"
-                                        f" 고가:{tenmin_state['base_high']:,} 저가:{tenmin_state['base_low']:,}"
-                                        f" 거래량:{tenmin_state['base_vol']:,}")
-                                update_simul_trail(
-                                    int(tenmin_state['base_low']), int(tenmin_state['base_high']),
-                                    int(tenmin_state['base_vol']), acct_no, stock_code,
-                                    start_date, start_time, "2",
-                                    row['시간'].replace(':', '') + '00', conn
-                                )
-                                signals.append({"signal_type": "BREAKOUT", "종목코드": stock_code,
-                                                "발생일자": row["일자"], "발생시간": row["시간"],
-                                                "돌파가격": breakout_check})
-                                continue
-
-                        # 기준봉 존재 → 10분봉 완성 시 이탈 체크
-                        else:
-                            completed_key = get_completed_10min_key(row["dt"])
-                            tenmin_df     = df[df["dt"].apply(get_completed_10min_key) == completed_key]
-
-                            if not tenmin_df.empty and row["dt"] == tenmin_df["dt"].max():
-                                if completed_key == tenmin_state["base_key"]:
-                                    continue
-                                if completed_key >= current_10min_key:
-                                    continue
-                                tenmin_low   = tenmin_df["저가"].astype(int).min()
-                                tenmin_high  = tenmin_df["고가"].astype(int).max()
-                                tenmin_vol   = tenmin_df["거래량"].astype(int).sum()
-                                tenmin_close = close_price
-                                sell_price   = close_price
-
-                                sell_trigger    = False
-                                sell_reason     = ""
-                                safety_margin   = int(basic_price + basic_price * 0.05)
-                                PEAK_RETRACEMENT_RATE = 0.5
-
-                                prev_key      = completed_key - timedelta(minutes=10)
-                                prev_tenmin_df = df[df["dt"].apply(get_completed_10min_key) == prev_key]
-                                prev_close_10  = (int(prev_tenmin_df.loc[prev_tenmin_df["dt"].idxmax(), "종가"])
-                                                if not prev_tenmin_df.empty else safety_margin + 1)
-
-                                # 조건 A: 기준봉 저가 이탈 + 안전마진 이하
-                                if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close <= safety_margin:
-                                    sell_trigger = True
-                                    gap_rate     = (safety_margin - tenmin_close) / safety_margin * 100
-                                    prev_below   = prev_close_10 < safety_margin
-                                    if gap_rate <= 0.5 and not prev_below:
-                                        sell_price = get_valid_sell_price(safety_margin)
-                                        a_case = "[안전마진가]"
-                                    elif gap_rate <= 2.0 and not prev_below:
-                                        sell_price = get_valid_sell_price(int((safety_margin + tenmin_close) / 2))
-                                        a_case = "[절충가]"
-                                    else:
-                                        sell_price = get_valid_sell_price(tenmin_close)
-                                        a_case = "[현재가]"
-                                    sell_reason = f"안전마진({safety_margin:,})원 이하 기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈 {a_case}"
-
-                                # 조건 B: 고점 대비 되돌림
-                                peak_to_safety = tenmin_state["peak_high"] - safety_margin
-                                effective_retr = 0.3 if current_time >= dt_time(14, 30) else PEAK_RETRACEMENT_RATE
-                                if (not sell_trigger and tenmin_state["peak_high"] > safety_margin
-                                        and peak_to_safety >= int(safety_margin * 0.05)):
-                                    peak_sell_threshold = tenmin_state["peak_high"] - int(peak_to_safety * effective_retr)
-                                    if tenmin_close < peak_sell_threshold:
-                                        sell_trigger = True
-                                        sell_price   = get_valid_sell_price(max(tenmin_close, peak_sell_threshold))
-                                        sell_reason  = f"고점({tenmin_state['peak_high']:,})원 되돌림 임계({peak_sell_threshold:,})원 종가 이탈"
-
-                                # 조건 C-1: 기준봉 저가 이탈 + 안전마진 초과 + 이탈가/최종이탈가 이탈 → 즉시 매도
-                                # 거래량·연속이탈 조건 없이 이탈가 기준으로 즉시 매도 처리
-                                if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close > safety_margin:
-                                    is_exit_breach = exit_price and tenmin_close <= int(exit_price)
-                                    is_stop_breach = tenmin_close <= int(stop_price)
-                                    if is_exit_breach or is_stop_breach:
-                                        sell_trigger = True
-                                        sell_price = get_valid_sell_price(max(tenmin_close, safety_margin))
-                                        sell_reason = f"이탈가({stop_price:,})원 이탈 기준봉 저가({tenmin_state['base_low']:,})원 이탈 (매도가:{sell_price:,})"
-
-                                # 조건 C-2: 기준봉 저가를 종가로 이탈 + 안전마진 이상 → 연속 이탈 판단
-                                # 거래량 초과 OR 연속 이탈 시 매도 (저거래량 지속 하락 방어)
-                                consecutive_breaks = ((1 if tenmin_close < tenmin_state["base_low"] else 0)
-                                                    + (1 if prev_close_10 < tenmin_state["base_low"] else 0))
-                                late_day_thresh    = 1 if current_time >= dt_time(14, 30) else 2
-                                if (not sell_trigger and tenmin_close < tenmin_state["base_low"]
-                                        and tenmin_close > safety_margin
-                                        and (tenmin_vol > tenmin_state["base_vol"] or consecutive_breaks >= late_day_thresh)):
-                                    sell_trigger = True
-                                    sell_price   = get_valid_sell_price(max(tenmin_close, safety_margin))
-                                    sell_reason  = f"기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈"
-
-                                if sell_trigger:
-                                     # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
+                    if tenmin_state["base_low"] is None:
+                        chk_vol = volumn if volumn else 0
+                        if trail_tp == '1':
+                            # breakdown_wait_1 대기 처리
+                            if breakdown_wait_1["active"]:
+                                current_10min_key_1 = get_10min_key(row["dt"])
+                                if current_10min_key_1 != breakdown_wait_1["tenmin_key"]:
+                                    if breakdown_wait_1["tenmin_low"] is None:
+                                        trigger_key_1   = breakdown_wait_1["tenmin_key"]
+                                        trigger_bars_1  = df[df["dt"].apply(get_10min_key) == trigger_key_1]
+                                        if not trigger_bars_1.empty:
+                                            breakdown_wait_1["tenmin_low"]  = trigger_bars_1["저가"].astype(int).min()
+                                            vol_ok_1, cur_v1, avg_v1 = _is_tenmin_vol_surge_1(trigger_key_1)
+                                            breakdown_wait_1["tenmin_vol_ok"]    = vol_ok_1
+                                            breakdown_wait_1["tenmin_vol"]       = cur_v1
+                                            breakdown_wait_1["tenmin_avg_vol"]   = avg_v1
+                                            if not vol_ok_1:
+                                                breakdown_wait_1.update({
+                                                    "active": False, "tenmin_key": None,
+                                                    "tenmin_low": None, "tenmin_vol_ok": None,
+                                                    "tenmin_vol": 0, "tenmin_avg_vol": 0,
+                                                    "sell_label": "",
+                                                })
+                                if breakdown_wait_1["tenmin_low"] is not None and low_price < breakdown_wait_1["tenmin_low"]:
+                                    # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
                                     if _short_market_down:
-                                        order_price = sell_price
-                                    else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 기준봉저가가 매도가 아래면 매도가 otherwise 기준봉저가
-                                        order_price = sell_price if tenmin_state['base_low'] < sell_price else tenmin_state['base_low']
+                                        order_price = close_price
+                                    else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 현재가가 이탈가 아래면 이탈가 otherwise 현재가
+                                        order_price = int(stop_price) if close_price < int(stop_price) else close_price
                                     trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
-                                    i_trail_plan = trail_plan if trail_plan else "50"
+                                    i_trail_plan = trail_plan if trail_plan else "100"
                                     trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
                                     trail_amt    = order_price * trail_qty
                                     u_basic_qty  = basic_qty - trail_qty
                                     u_basic_amt  = basic_price * u_basic_qty
-
-                                    if basic_qty == trail_qty:
-                                        update_simul_close(
-                                            nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
-                                            u_basic_qty, u_basic_amt, acct_no,
-                                            stock_code, stock_name, start_date, start_time, "4",
-                                            row['시간'].replace(':', '') + '00', '수익완료', conn
-                                        )
-                                    else:
-                                        update_simul_close(
-                                            nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
-                                            u_basic_qty, u_basic_amt, acct_no,
-                                            stock_code, stock_name, start_date, start_time, "3",
-                                            row['시간'].replace(':', '') + '00', '안전마진', conn
-                                        )
-                                    if verbose:
-                                        print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
-                                            f" {sell_reason} (10분봉 종가:{tenmin_close:,}원, 저가:{tenmin_low:,}원)")
-                                    signals.append({"signal_type": "BASE_10MIN_LOW_BREAK",
+                                    sell_label   = breakdown_wait_1["sell_label"]
+                                    update_simul_close(
+                                        nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
+                                        u_basic_qty, u_basic_amt, acct_no, 
+                                        stock_code, stock_name, start_date, start_time, "4",
+                                        row['시간'].replace(':', '') + '00', sell_label, conn
+                                    )
+                                    signals.append({"signal_type": "BREAKDOWN_BEFORE_BREAKOUT",
                                                     "종목코드": stock_code, "발생일자": row["일자"],
-                                                    "발생시간": row["시간"],
-                                                    "기준봉저가": tenmin_state["base_low"]})
+                                                    "발생시간": row["시간"], "이탈가격": breakdown_check})
                                     return signals
 
-                                # 기준봉 갱신
-                                base_updated = False
-                                if tenmin_high > tenmin_low:
-                                    if tenmin_high > tenmin_state["base_high"] or tenmin_vol > tenmin_state["base_vol"]:
-                                        tenmin_state.update({
-                                            "base_low":  max(tenmin_low, tenmin_state["base_low"]),
-                                            "base_high": tenmin_high,
-                                            "base_vol":  tenmin_vol,
-                                            "peak_high": max(tenmin_state["peak_high"], tenmin_high),
-                                        })
-                                        base_updated = True
-                                        if verbose:
-                                            reason = "고가 돌파" if tenmin_high > tenmin_state["base_high"] else "거래량 돌파"
-                                            print(f"[시뮬]-{nick}-[{completed_key.strftime('%Y%m%d %H:%M')}]{stock_name}[{stock_code}]"
-                                                f" {reason} 기준봉 갱신 고가:{tenmin_high:,} 저가:{tenmin_low:,} 거래량:{tenmin_vol:,}")
-                                        update_simul_trail(
-                                            int(tenmin_low), int(tenmin_high), int(tenmin_vol),
-                                            acct_no, stock_code, start_date, start_time, "2",
-                                            row['시간'].replace(':', '') + '00', conn
-                                        )
-                                if not base_updated:
+                            else:
+                                if breakdown_check <= exit_price and acml_vol > chk_vol:
+                                    current_10min_key_1 = get_10min_key(row["dt"])
+                                    breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
+                                                            "tenmin_low": None, "tenmin_vol_ok": None,
+                                                            "sell_label": "손절매도"})
+                                    if current_10min_key_1.strftime("%Y%m%d%H%M") != breakdown_wait_1["last_alert_tenmin_key"]:
+                                        breakdown_wait_1["last_alert_tenmin_key"] = current_10min_key_1.strftime("%Y%m%d%H%M")
+                                        _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
+                                        print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 최종이탈가({exit_price:,})원 이탈 대기")
+
+                                elif breakdown_check <= stop_price and acml_vol > chk_vol:
+                                    current_10min_key_1 = get_10min_key(row["dt"])
+                                    breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
+                                                            "tenmin_low": None, "tenmin_vol_ok": None,
+                                                            "sell_label": "이탈매도"})
+                                    if current_10min_key_1.strftime("%Y%m%d%H%M") != breakdown_wait_1["last_alert_tenmin_key"]:
+                                        breakdown_wait_1["last_alert_tenmin_key"] = current_10min_key_1.strftime("%Y%m%d%H%M")
+                                        _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
+                                        print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 이탈가({stop_price:,})원 이탈 대기")
+
+                        # 목표가 돌파 → 기준봉 생성
+                        if breakout_check >= target_price:
+                            base_key    = get_completed_10min_key(row["dt"])
+                            base_10min  = df[df["dt"].apply(get_10min_key) == base_key]
+                            if base_10min.empty:
+                                continue
+                            tenmin_state.update({
+                                "base_low":  base_10min["저가"].astype(int).min(),
+                                "base_high": base_10min["고가"].astype(int).max(),
+                                "base_vol":  base_10min["거래량"].astype(int).sum(),
+                                "base_key":  base_key,
+                            })
+                            if verbose:
+                                print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
+                                    f" 목표가 {target_price:,}원 돌파 기준봉 설정"
+                                    f" 고가:{tenmin_state['base_high']:,} 저가:{tenmin_state['base_low']:,}"
+                                    f" 거래량:{tenmin_state['base_vol']:,}")
+                            update_simul_trail(
+                                int(tenmin_state['base_low']), int(tenmin_state['base_high']),
+                                int(tenmin_state['base_vol']), acct_no, stock_code,
+                                start_date, start_time, "2",
+                                row['시간'].replace(':', '') + '00', conn
+                            )
+                            signals.append({"signal_type": "BREAKOUT", "종목코드": stock_code,
+                                            "발생일자": row["일자"], "발생시간": row["시간"],
+                                            "돌파가격": breakout_check})
+                            continue
+
+                    # 기준봉 존재 → 10분봉 완성 시 이탈 체크
+                    else:
+                        completed_key = get_completed_10min_key(row["dt"])
+                        tenmin_df     = df[df["dt"].apply(get_completed_10min_key) == completed_key]
+
+                        if not tenmin_df.empty and row["dt"] == tenmin_df["dt"].max():
+                            if completed_key == tenmin_state["base_key"]:
+                                continue
+                            if completed_key >= current_10min_key:
+                                continue
+                            tenmin_low   = tenmin_df["저가"].astype(int).min()
+                            tenmin_high  = tenmin_df["고가"].astype(int).max()
+                            tenmin_vol   = tenmin_df["거래량"].astype(int).sum()
+                            tenmin_close = close_price
+                            sell_price   = close_price
+
+                            sell_trigger    = False
+                            sell_reason     = ""
+                            safety_margin   = int(basic_price + basic_price * 0.05)
+                            PEAK_RETRACEMENT_RATE = 0.5
+
+                            prev_key      = completed_key - timedelta(minutes=10)
+                            prev_tenmin_df = df[df["dt"].apply(get_completed_10min_key) == prev_key]
+                            prev_close_10  = (int(prev_tenmin_df.loc[prev_tenmin_df["dt"].idxmax(), "종가"])
+                                            if not prev_tenmin_df.empty else safety_margin + 1)
+
+                            # 조건 A: 기준봉 저가 이탈 + 안전마진 이하
+                            if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close <= safety_margin:
+                                sell_trigger = True
+                                gap_rate     = (safety_margin - tenmin_close) / safety_margin * 100
+                                prev_below   = prev_close_10 < safety_margin
+                                if gap_rate <= 0.5 and not prev_below:
+                                    sell_price = get_valid_sell_price(safety_margin)
+                                    a_case = "[안전마진가]"
+                                elif gap_rate <= 2.0 and not prev_below:
+                                    sell_price = get_valid_sell_price(int((safety_margin + tenmin_close) / 2))
+                                    a_case = "[절충가]"
+                                else:
+                                    sell_price = get_valid_sell_price(tenmin_close)
+                                    a_case = "[현재가]"
+                                sell_reason = f"안전마진({safety_margin:,})원 이하 기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈 {a_case}"
+
+                            # 조건 B: 고점 대비 되돌림
+                            peak_to_safety = tenmin_state["peak_high"] - safety_margin
+                            effective_retr = 0.3 if current_time >= dt_time(14, 30) else PEAK_RETRACEMENT_RATE
+                            if (not sell_trigger and tenmin_state["peak_high"] > safety_margin
+                                    and peak_to_safety >= int(safety_margin * 0.05)):
+                                peak_sell_threshold = tenmin_state["peak_high"] - int(peak_to_safety * effective_retr)
+                                if tenmin_close < peak_sell_threshold:
+                                    sell_trigger = True
+                                    sell_price   = get_valid_sell_price(max(tenmin_close, peak_sell_threshold))
+                                    sell_reason  = f"고점({tenmin_state['peak_high']:,})원 되돌림 임계({peak_sell_threshold:,})원 종가 이탈"
+
+                            # 조건 C-1: 기준봉 저가 이탈 + 안전마진 초과 + 이탈가/최종이탈가 이탈 → 즉시 매도
+                            # 거래량·연속이탈 조건 없이 이탈가 기준으로 즉시 매도 처리
+                            if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close > safety_margin:
+                                is_exit_breach = exit_price and tenmin_close <= int(exit_price)
+                                is_stop_breach = tenmin_close <= int(stop_price)
+                                if is_exit_breach or is_stop_breach:
+                                    sell_trigger = True
+                                    sell_price = get_valid_sell_price(max(tenmin_close, safety_margin))
+                                    sell_reason = f"이탈가({stop_price:,})원 이탈 기준봉 저가({tenmin_state['base_low']:,})원 이탈 (매도가:{sell_price:,})"
+
+                            # 조건 C-2: 기준봉 저가를 종가로 이탈 + 안전마진 이상 → 연속 이탈 판단
+                            # 거래량 초과 OR 연속 이탈 시 매도 (저거래량 지속 하락 방어)
+                            consecutive_breaks = ((1 if tenmin_close < tenmin_state["base_low"] else 0)
+                                                + (1 if prev_close_10 < tenmin_state["base_low"] else 0))
+                            late_day_thresh    = 1 if current_time >= dt_time(14, 30) else 2
+                            if (not sell_trigger and tenmin_close < tenmin_state["base_low"]
+                                    and tenmin_close > safety_margin
+                                    and (tenmin_vol > tenmin_state["base_vol"] or consecutive_breaks >= late_day_thresh)):
+                                sell_trigger = True
+                                sell_price   = get_valid_sell_price(max(tenmin_close, safety_margin))
+                                sell_reason  = f"기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈"
+
+                            if sell_trigger:
+                                    # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
+                                if _short_market_down:
+                                    order_price = sell_price
+                                else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 기준봉저가가 매도가 아래면 매도가 otherwise 기준봉저가
+                                    order_price = sell_price if tenmin_state['base_low'] < sell_price else tenmin_state['base_low']
+                                trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
+                                i_trail_plan = trail_plan if trail_plan else "50"
+                                trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
+                                trail_amt    = order_price * trail_qty
+                                u_basic_qty  = basic_qty - trail_qty
+                                u_basic_amt  = basic_price * u_basic_qty
+
+                                if basic_qty == trail_qty:
+                                    update_simul_close(
+                                        nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
+                                        u_basic_qty, u_basic_amt, acct_no,
+                                        stock_code, stock_name, start_date, start_time, "4",
+                                        row['시간'].replace(':', '') + '00', '수익완료', conn
+                                    )
+                                else:
+                                    update_simul_close(
+                                        nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
+                                        u_basic_qty, u_basic_amt, acct_no,
+                                        stock_code, stock_name, start_date, start_time, "3",
+                                        row['시간'].replace(':', '') + '00', '안전마진', conn
+                                    )
+                                if verbose:
+                                    print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
+                                        f" {sell_reason} (10분봉 종가:{tenmin_close:,}원, 저가:{tenmin_low:,}원)")
+                                signals.append({"signal_type": "BASE_10MIN_LOW_BREAK",
+                                                "종목코드": stock_code, "발생일자": row["일자"],
+                                                "발생시간": row["시간"],
+                                                "기준봉저가": tenmin_state["base_low"]})
+                                return signals
+
+                            # 기준봉 갱신
+                            base_updated = False
+                            if tenmin_high > tenmin_low:
+                                if tenmin_high > tenmin_state["base_high"] or tenmin_vol > tenmin_state["base_vol"]:
+                                    tenmin_state.update({
+                                        "base_low":  max(tenmin_low, tenmin_state["base_low"]),
+                                        "base_high": tenmin_high,
+                                        "base_vol":  tenmin_vol,
+                                        "peak_high": max(tenmin_state["peak_high"], tenmin_high),
+                                    })
+                                    base_updated = True
+                                    if verbose:
+                                        reason = "고가 돌파" if tenmin_high > tenmin_state["base_high"] else "거래량 돌파"
+                                        print(f"[시뮬]-{nick}-[{completed_key.strftime('%Y%m%d %H:%M')}]{stock_name}[{stock_code}]"
+                                            f" {reason} 기준봉 갱신 고가:{tenmin_high:,} 저가:{tenmin_low:,} 거래량:{tenmin_vol:,}")
                                     update_simul_trail(
-                                        int(tenmin_state["base_low"]), int(tenmin_state["base_high"]),
-                                        int(tenmin_state["base_vol"]), acct_no, stock_code,
-                                        start_date, start_time, "2",
+                                        int(tenmin_low), int(tenmin_high), int(tenmin_vol),
+                                        acct_no, stock_code, start_date, start_time, "2",
                                         row['시간'].replace(':', '') + '00', conn
                                     )
+                            if not base_updated:
+                                update_simul_trail(
+                                    int(tenmin_state["base_low"]), int(tenmin_state["base_high"]),
+                                    int(tenmin_state["base_vol"]), acct_no, stock_code,
+                                    start_date, start_time, "2",
+                                    row['시간'].replace(':', '') + '00', conn
+                                )
     return signals
 
 
