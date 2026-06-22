@@ -1092,6 +1092,11 @@ def get_kis_1min_from_datetime_simul(
 
                             else:
                                 if breakdown_check <= exit_price and acml_vol > chk_vol:
+                                    # 시장 단기 하락인 경우 매도 진행
+                                    if _short_market_down:
+                                        sell_trigger = True
+                                        sell_reason = f"시장 단기 하락 최종이탈가({exit_price:,})원) 이탈 매도 진행"
+                                        
                                     current_10min_key_1 = get_10min_key(row["dt"])
                                     breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
                                                             "tenmin_low": None, "tenmin_vol_ok": None,
@@ -1102,6 +1107,11 @@ def get_kis_1min_from_datetime_simul(
                                         print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 최종이탈가({exit_price:,})원 이탈 대기")
 
                                 elif breakdown_check <= stop_price and acml_vol > chk_vol:
+                                    # 시장 단기 하락인 경우 매도 진행
+                                    if _short_market_down:
+                                        sell_trigger = True
+                                        sell_reason = f"시장 단기 하락 이탈가({stop_price:,})원) 이탈 매도 진행"
+
                                     current_10min_key_1 = get_10min_key(row["dt"])
                                     breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
                                                             "tenmin_low": None, "tenmin_vol_ok": None,
