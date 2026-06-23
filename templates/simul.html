@@ -433,6 +433,79 @@
     .download-close { margin-left:auto; background:none; border:none; cursor:pointer;
                       font-size:1rem; color:#888; line-height:1; }
     .btn-delete-all { background: #e63946; color: #fff; flex: none; padding: 9px 18px; font-size: .85rem; }
+
+    /* ── DART 기업 상세정보 ── */
+    .dart-card {
+      max-width: 900px; margin: 0 auto 24px;
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 20px 24px;
+    }
+    .dart-corp-header { display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+    .dart-corp-name   { font-size:1rem; font-weight:700; color:#1a1a2e; }
+    .dart-corp-badge  { font-size:.72rem; background:#e8f4fd; color:#1a73e8;
+                        padding:2px 8px; border-radius:10px; font-weight:600; }
+    .dart-src-badge   { font-size:.69rem; background:#f0f2f5; color:#888;
+                        padding:2px 8px; border-radius:10px; }
+    .dart-summary-grid {
+      display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:20px;
+    }
+    .dart-summary-box {
+      background:#f7f8ff; border-radius:10px; padding:12px 14px; min-height:90px;
+    }
+    .dart-summary-title {
+      font-size:.7rem; font-weight:700; color:#4361ee;
+      text-transform:uppercase; letter-spacing:.07em; margin-bottom:8px;
+    }
+    .dart-summary-body { font-size:.81rem; color:#444; line-height:1.8; }
+    .dart-summary-body a { color:#1a73e8; text-decoration:none; font-size:.79rem; }
+    .dart-summary-body a:hover { text-decoration:underline; }
+    .dart-news-item { margin-bottom:6px; border-bottom:1px solid #eee; padding-bottom:6px; }
+    .dart-news-item:last-child { border-bottom:none; margin-bottom:0; padding-bottom:0; }
+    .dart-news-title { font-size:.81rem; color:#222; font-weight:500; line-height:1.4; }
+    .dart-news-meta  { font-size:.7rem; color:#aaa; margin-top:1px; }
+    .dart-tabs {
+      display:flex; gap:0; border-bottom:2px solid #e8eaff; margin-bottom:14px;
+    }
+    .dart-tab-btn {
+      padding:7px 18px; background:none; border:none; border-bottom:2px solid transparent;
+      margin-bottom:-2px; font-size:.83rem; font-weight:600; color:#bbb;
+      cursor:pointer; flex:none; transition:color .15s;
+    }
+    .dart-tab-btn.active { color:#4361ee; border-bottom-color:#4361ee; }
+    .dart-tab-btn:hover:not(.active) { color:#555; }
+    .dart-table { width:100%; border-collapse:collapse; font-size:.8rem; }
+    .dart-table th {
+      background:#f7f8ff; color:#666; font-weight:600;
+      padding:7px 10px; border-bottom:1.5px solid #e8eaff;
+      text-align:right; white-space:nowrap;
+    }
+    .dart-table th:first-child { text-align:left; }
+    .dart-table td {
+      padding:7px 10px; border-bottom:1px solid #f5f5f5;
+      text-align:right; color:#333; white-space:nowrap;
+    }
+    .dart-table td:first-child { text-align:left; }
+    .dart-table tr:hover td { background:#f9f9ff; }
+    .dart-empty   { text-align:center; color:#bbb; padding:20px; font-size:.84rem; }
+    .dart-loading { text-align:center; color:#aaa; padding:30px; font-size:.84rem; }
+    .dart-period  { font-size:.73rem; color:#999; margin-bottom:10px; }
+    .dart-keywords { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+    .dart-kw-chip {
+      font-size:.73rem; padding:3px 10px; border-radius:12px;
+      background:#eef2ff; color:#4361ee; font-weight:600;
+      border:1px solid #c7d2fe; white-space:nowrap;
+    }
+    .dart-consensus {
+      display:flex; flex-wrap:wrap; gap:10px; padding:8px 12px;
+      background:#f0f7ff; border-radius:8px; font-size:.79rem; align-items:center;
+    }
+    .dart-consensus-label {
+      font-weight:700; padding:2px 8px; border-radius:8px; font-size:.75rem;
+    }
+    .dart-consensus-label.buy  { background:#d1fae5; color:#059669; }
+    .dart-consensus-label.hold { background:#fef9c3; color:#b45309; }
+    .dart-consensus-label.sell { background:#fee2e2; color:#dc2626; }
+    @media (max-width:700px) { .dart-summary-grid { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -702,6 +775,282 @@
       <button class="btn-save" @click="save">저장 (trading_trail_simul)</button>
     </div>
   </div>
+
+  <!-- DART 기업 상세정보 카드 -->
+  <div class="dart-card" v-if="companyInfo || companyLoading">
+    <div v-if="companyLoading" class="dart-loading">📡 기업정보 조회 중 (DART · FnGuide)...</div>
+    <template v-else-if="companyInfo">
+
+      <!-- 헤더 -->
+      <div class="dart-corp-header">
+        <span class="dart-corp-name">{{ companyInfo.corp_name }}</span>
+        <span class="dart-corp-badge">{{ companyInfo.corp_cls }}</span>
+        <span class="dart-src-badge">DART · FnGuide</span>
+      </div>
+
+      <!-- 주요사업내역 키워드 4개 -->
+      <div class="dart-keywords"
+           v-if="companyInfo.fnguide && companyInfo.fnguide.keywords && companyInfo.fnguide.keywords.length">
+        <span class="dart-kw-chip" v-for="kw in companyInfo.fnguide.keywords" :key="kw">{{ kw }}</span>
+      </div>
+
+      <!-- 4개 요약 섹션 -->
+      <div class="dart-summary-grid">
+
+        <!-- ── 기업정보 (전폭) ── -->
+        <div class="dart-summary-box" style="grid-column:1/-1">
+          <div class="dart-summary-title" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span>기업정보</span>
+            <span v-if="companyInfo.biz_summary && companyInfo.biz_summary.period" class="dart-period" style="margin:0">{{ companyInfo.biz_summary.period }}</span>
+          </div>
+          <!-- 컨센서스 -->
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.consensus">
+            <div class="dart-consensus" style="margin-bottom:8px">
+              <span class="dart-consensus-label"
+                    :class="Number(companyInfo.fnguide.consensus.opinion)>=4?'buy':Number(companyInfo.fnguide.consensus.opinion)>=3?'hold':'sell'">
+                {{ companyInfo.fnguide.consensus.opinion_label }}
+              </span>
+              <span>목표주가 <b>{{ Number(companyInfo.fnguide.consensus.target_price.replace(/,/g,'')).toLocaleString('ko-KR') }}원</b></span>
+              <span style="color:#999;font-size:.73rem">추정기관 {{ companyInfo.fnguide.consensus.analyst_count }}개</span>
+              <span style="color:#999;font-size:.73rem">PER {{ companyInfo.fnguide.consensus.per }}배</span>
+            </div>
+          </template>
+          <!-- 기본정보 한 줄 -->
+          <div style="display:flex;flex-wrap:wrap;gap:10px;font-size:.78rem;color:#555;margin-bottom:6px">
+            <span v-if="companyInfo.ceo_nm">👤 {{ companyInfo.ceo_nm }}</span>
+            <span v-if="companyInfo.acc_mt">📅 결산 {{ companyInfo.acc_mt }}월</span>
+            <span v-if="companyInfo.est_dt" style="color:#aaa">설립 {{ companyInfo.est_dt }}</span>
+            <a v-if="companyInfo.hm_url" :href="'http://'+companyInfo.hm_url.replace(/^https?:\/\//,'')" target="_blank" style="color:#1a73e8">🔗 홈페이지</a>
+          </div>
+          <!-- 사업의 개요 (더보기/접기) -->
+          <template v-if="companyInfo.biz_summary && companyInfo.biz_summary.text">
+            <div style="border-top:1px solid #e8eaff;padding-top:7px">
+              <div style="font-size:.75rem;line-height:1.7;color:#444;white-space:pre-line;word-break:keep-all"
+                   :style="bizExpanded
+                     ? {}
+                     : {maxHeight:'72px', overflow:'hidden',
+                        maskImage:'linear-gradient(to bottom,#000 40%,transparent 100%)',
+                        WebkitMaskImage:'linear-gradient(to bottom,#000 40%,transparent 100%)'}">
+                {{ companyInfo.biz_summary.text }}
+              </div>
+              <button v-if="companyInfo.biz_summary.text.length > 120"
+                      @click="bizExpanded=!bizExpanded"
+                      style="margin-top:4px;background:none;border:none;color:#4361ee;
+                             font-size:.73rem;cursor:pointer;padding:0;font-weight:600">
+                {{ bizExpanded ? '▲ 접기' : '▼ 더보기' }}
+              </button>
+            </div>
+          </template>
+        </div>
+
+        <!-- ── 제품비중 ── -->
+        <div class="dart-summary-box">
+          <div class="dart-summary-title">제품비중</div>
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.products && companyInfo.fnguide.products.length">
+            <div v-for="p in companyInfo.fnguide.products" :key="p.name" style="margin-bottom:5px">
+              <div style="display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:2px">
+                <span style="color:#444;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.name }}</span>
+                <b style="flex:none;color:#4361ee;margin-left:6px">{{ p.pct }}%</b>
+              </div>
+              <div style="background:#e8eaff;border-radius:3px;height:4px;overflow:hidden">
+                <div :style="{width:Math.min(p.pct,100)+'%',background:'#4361ee',height:'100%',borderRadius:'3px'}"></div>
+              </div>
+            </div>
+          </template>
+          <!-- 자사 시장점유율 -->
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.market_shares && companyInfo.fnguide.market_shares.length">
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #e8eaff;font-size:.72rem;color:#888">자사 시장점유율</div>
+            <div v-for="m in companyInfo.fnguide.market_shares.slice(0,3)" :key="m.product"
+                 style="display:flex;justify-content:space-between;font-size:.74rem;margin-top:2px">
+              <span style="color:#555">{{ m.product }}</span>
+              <b style="color:#e67e22">{{ m.share }}%</b>
+            </div>
+          </template>
+          <!-- 주요 경쟁사 -->
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.peers && companyInfo.fnguide.peers.length">
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #e8eaff;font-size:.72rem;color:#888;margin-bottom:4px">주요 경쟁사</div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px">
+              <span v-for="p in companyInfo.fnguide.peers" :key="typeof p==='object'?p.name:p"
+                    style="font-size:.71rem;padding:2px 7px;background:#fff3e0;color:#b45309;border-radius:8px;border:1px solid #fed7aa">
+                {{ typeof p==='object' ? p.name : p }}
+              </span>
+            </div>
+          </template>
+          <div v-if="(!companyInfo.fnguide||!companyInfo.fnguide.products||!companyInfo.fnguide.products.length)&&companyInfo.adres"
+               style="font-size:.75rem;color:#555">📍 {{ companyInfo.adres }}</div>
+        </div>
+
+        <!-- ── 예상실적 ── -->
+        <div class="dart-summary-box">
+          <div class="dart-summary-title">예상실적</div>
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.next_earnings">
+            <div style="font-size:.74rem;color:#555;margin-bottom:6px">
+              <b style="color:#333">예상 영업이익</b>
+              <span style="font-size:.8rem;font-weight:700;color:#4361ee;margin-left:4px">
+                {{ Number(companyInfo.fnguide.next_earnings.est_op.replace(/,/g,'')).toLocaleString('ko-KR') }}억
+              </span>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+              <div style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
+                3개월전대비
+                <b :style="{color: companyInfo.fnguide.next_earnings.vs_3m&&companyInfo.fnguide.next_earnings.vs_3m.startsWith('+')?'#2dc653':'#e63946'}">
+                  {{ companyInfo.fnguide.next_earnings.vs_3m }}%
+                </b>
+              </div>
+              <div style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
+                전년동기대비
+                <b :style="{color: companyInfo.fnguide.next_earnings.vs_ly&&companyInfo.fnguide.next_earnings.vs_ly.startsWith('+')?'#2dc653':'#e63946'}">
+                  {{ companyInfo.fnguide.next_earnings.vs_ly }}%
+                </b>
+              </div>
+            </div>
+          </template>
+          <!-- 최근 분기 영업이익률 트렌드 -->
+          <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
+            <div style="font-size:.72rem;color:#888;margin-bottom:4px">최근 분기 실적 트렌드</div>
+            <div v-for="q in companyInfo.fnguide.financial_highlight.slice(-3)" :key="q.period"
+                 style="display:flex;justify-content:space-between;font-size:.74rem;margin-bottom:2px">
+              <span style="color:#666">{{ q.period }}<span v-if="q.is_estimate" style="color:#e67e22;font-size:.65rem"> (E)</span></span>
+              <span>
+                <b :style="{color: q.op_profit&&q.op_profit>0?'#2dc653':'#e63946'}">
+                  영업이익 {{ q.op_profit ? q.op_profit.toLocaleString('ko-KR') : '-' }}억
+                </b>
+                <span v-if="q.op_margin!=null" style="color:#888;margin-left:4px">{{ q.op_margin }}%</span>
+              </span>
+            </div>
+          </template>
+          <div v-if="(!companyInfo.fnguide||!companyInfo.fnguide.next_earnings)&&(!companyInfo.fnguide||!companyInfo.fnguide.financial_highlight||!companyInfo.fnguide.financial_highlight.length)"
+               style="color:#bbb;font-size:.78rem">데이터 없음</div>
+        </div>
+
+      </div><!-- /dart-summary-grid -->
+
+      <!-- 탭 -->
+      <div class="dart-tabs">
+        <button class="dart-tab-btn" :class="{active:companyTab==='financials'}" @click="companyTab='financials'">기업실적 (FnGuide)</button>
+        <button class="dart-tab-btn" :class="{active:companyTab==='shareholders'}" @click="companyTab='shareholders'">주주현황</button>
+        <button class="dart-tab-btn" :class="{active:companyTab==='executives'}" @click="companyTab='executives'">경영진</button>
+      </div>
+
+      <!-- 탭1: 기업실적 (FnGuide Financial Highlight 분기별) -->
+      <div v-if="companyTab==='financials'">
+        <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
+          <div style="overflow-x:auto">
+            <table class="dart-table">
+              <thead>
+                <tr>
+                  <th>분기</th>
+                  <th>매출액(억원)</th>
+                  <th>영업이익(억원)</th>
+                  <th>QoQ증감률</th>
+                  <th>순이익(억원)</th>
+                  <th>영업이익률</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="q in companyInfo.fnguide.financial_highlight" :key="q.period"
+                    :style="{background: q.is_estimate ? '#fffbf0' : ''}">
+                  <td>{{ q.period }}<span v-if="q.is_estimate" style="color:#e67e22;font-size:.68rem"> (E)</span></td>
+                  <td>{{ q.revenue   ? q.revenue.toLocaleString('ko-KR')   : '-' }}</td>
+                  <td :style="{fontWeight:600,color:q.op_profit!=null?(q.op_profit>=0?'#2dc653':'#e63946'):''}">
+                    {{ q.op_profit  ? q.op_profit.toLocaleString('ko-KR')  : '-' }}
+                  </td>
+                  <td :style="{color:q.op_growth==null?'':q.op_growth>=0?'#2dc653':'#e63946',fontWeight:q.op_growth!=null?600:400}">
+                    {{ q.op_growth!=null ? (q.op_growth>=0?'+':'')+q.op_growth+'%' : '-' }}
+                  </td>
+                  <td>{{ q.net_profit ? q.net_profit.toLocaleString('ko-KR') : '-' }}</td>
+                  <td :style="{color:q.op_margin!=null?(q.op_margin>=0?'#2dc653':'#e63946'):'',fontWeight:q.op_margin!=null?600:400}">
+                    {{ q.op_margin!=null ? q.op_margin+'%' : '-' }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="dart-period" style="margin-top:6px">출처: FnGuide Financial Highlight (연결, 단위: 억원)</div>
+        </template>
+        <div v-else class="dart-empty">FnGuide 실적 데이터 없음</div>
+      </div>
+
+      <!-- 탭2: 주주현황 -->
+      <div v-if="companyTab==='shareholders'">
+        <div v-if="!companyInfo.shareholders || !companyInfo.shareholders.major || !companyInfo.shareholders.major.length"
+             class="dart-empty">주주 데이터 없음 (DART 공시 미확인)</div>
+        <div v-else>
+          <div class="dart-period" style="margin-bottom:8px">
+            출처: DART {{ companyInfo.shareholders.period }} · 주주에 관한 사항
+          </div>
+
+          <!-- 최대주주 및 특수관계인 보유현황 -->
+          <div style="font-size:.76rem;font-weight:700;color:#333;margin-bottom:4px">
+            최대주주 및 특수관계인 주식 보유 현황
+          </div>
+          <div style="overflow-x:auto;margin-bottom:14px">
+            <table class="dart-table">
+              <thead>
+                <tr>
+                  <th>주주명</th><th>관계</th><th>주식종류</th>
+                  <th>기초보유주수</th><th>기초지분(%)</th>
+                  <th>기말보유주수</th><th>기말지분(%)</th>
+                  <th>변동원인</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in companyInfo.shareholders.major" :key="s.name+s.stock_knd">
+                  <td style="font-weight:600">{{ s.name }}</td>
+                  <td>{{ s.relate||'-' }}</td>
+                  <td>{{ s.stock_knd||'보통주' }}</td>
+                  <td style="text-align:right">{{ s.start_qty||'-' }}</td>
+                  <td style="text-align:right;font-weight:600">{{ s.start_ratio||'-' }}</td>
+                  <td style="text-align:right">{{ s.end_qty||'-' }}</td>
+                  <td style="text-align:right;font-weight:600;color:#4361ee">{{ s.end_ratio||'-' }}</td>
+                  <td style="font-size:.72rem;color:#888">{{ s.change||'-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 소액주주 현황 -->
+          <template v-if="companyInfo.shareholders.minority">
+            <div style="font-size:.76rem;font-weight:700;color:#333;margin-bottom:4px">소액주주 현황</div>
+            <div style="display:flex;gap:20px;background:#f7f8ff;padding:10px 14px;border-radius:8px;font-size:.78rem;flex-wrap:wrap">
+              <span>소액주주수 <b>{{ Number(companyInfo.shareholders.minority.count.replace(/,/g,'')||0).toLocaleString('ko-KR') }}명</b></span>
+              <span>보유주식수 <b>{{ Number(companyInfo.shareholders.minority.shares.replace(/,/g,'')||0).toLocaleString('ko-KR') }}주</b></span>
+              <span>보유비율 <b style="color:#4361ee">{{ companyInfo.shareholders.minority.ratio }}%</b></span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- 탭3: 경영진 -->
+      <div v-if="companyTab==='executives'">
+        <div v-if="!companyInfo.executives||!companyInfo.executives.list||!companyInfo.executives.list.length"
+             class="dart-empty">데이터 없음 (DART 공시 미확인)</div>
+        <div v-else>
+          <div class="dart-period" style="margin-bottom:8px">
+            출처: DART {{ companyInfo.executives.period }} · 임원 및 직원등의 현황
+          </div>
+          <div style="overflow-x:auto">
+            <table class="dart-table">
+              <thead>
+                <tr><th>직위</th><th>성명</th><th>소유주식수<br><span style="font-weight:400;font-size:.68rem">(의결권있는)</span></th><th>주요경력</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="e in companyInfo.executives.list" :key="e.name+e.position">
+                  <td style="white-space:nowrap">{{ e.position||'-' }}</td>
+                  <td style="font-weight:600;white-space:nowrap">{{ e.name }}</td>
+                  <td style="text-align:right;white-space:nowrap">
+                    {{ e.shares ? Number(String(e.shares).replace(/,/g,'')).toLocaleString('ko-KR') : '-' }}
+                  </td>
+                  <td style="font-size:.73rem;color:#555;max-width:260px;word-break:keep-all">{{ e.career||'-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </template>
+  </div><!-- /dart-card -->
 
   <!-- 매도 / 변경 통합 -->
   <div class="card" v-if="!sellPreview">
@@ -1053,6 +1402,27 @@ createApp({
       basic_price: '매수단가', basic_qty: '매수량', trail_tp: '추적유형', proc_min: '처리시간',
     };
 
+    const companyInfo    = ref(null);
+    const companyTab     = ref('financials');
+    const companyLoading = ref(false);
+    const bizExpanded    = ref(false);
+
+    async function fetchCompanyInfo(code) {
+      if (!code || code.length !== 6) return;
+      companyInfo.value    = null;
+      companyLoading.value = true;
+      try {
+        const res  = await fetch(`/api/dart/company-info?code=${code}`);
+        const data = await res.json();
+        if (!data.error) {
+          companyInfo.value = data;
+          companyTab.value  = 'financials';
+        }
+      } catch { /* 무시 */ } finally {
+        companyLoading.value = false;
+      }
+    }
+
     const sellForm = ref({
       code: '', name: '', sell_price: null, sell_ratio: 100, sell_date: today, sell_time: ''
     });
@@ -1263,6 +1633,7 @@ createApp({
           const data = await res.json();
           if (data.name) form.value.name = data.name;
           await fetchStockInfo(code, form.value.buy_date);
+          fetchCompanyInfo(code);
         } else {
           const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
           const data = await res.json();
@@ -1270,6 +1641,7 @@ createApp({
             form.value.name = val;
             form.value.code = data.code;
             await fetchStockInfo(data.code, form.value.buy_date);
+            fetchCompanyInfo(data.code);
           }
         }
       } catch { /* 무시 */ } finally {
@@ -1551,10 +1923,13 @@ createApp({
 
     function resetForm() {
       form.value    = { code: '', name: '', buy_price: null, loss_price: null, buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: '' };
-      useLossAmt.value = false;
-      preview.value    = null;
-      stockInfo.value  = null;
-      alert.value.msg  = '';
+      useLossAmt.value    = false;
+      preview.value       = null;
+      stockInfo.value     = null;
+      companyInfo.value    = null;
+      companyLoading.value = false;
+      bizExpanded.value    = false;
+      alert.value.msg     = '';
     }
 
     function fmt(n)     { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
@@ -1576,6 +1951,7 @@ createApp({
       simDate, running, runLog,
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
+      companyInfo, companyTab, companyLoading, fetchCompanyInfo, bizExpanded,
       sellForm, sellPreview, sellLookingUp, canSellCalc,
       trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
       loadActiveStocks, selectActiveStock,
