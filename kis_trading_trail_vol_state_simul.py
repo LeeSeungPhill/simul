@@ -800,7 +800,7 @@ def get_kis_1min_from_datetime_simul(
                                         sell_signal_type = "FIXED_STOP"
                                         order_price      = close_price
 
-                                        if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
+                                        if verbose and breakdown_notify_last_key is None and current_time < dt_time(15, 0):
                                             breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 15%달성·수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 [시장 약세] 매도 진행")
@@ -810,7 +810,7 @@ def get_kis_1min_from_datetime_simul(
                                                            "reason": f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%]",
                                                            "signal_type": "FIXED_STOP",
                                                            "effective_stop": fixed_stop, "order_price": 0})
-                                        if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
+                                        if verbose and breakdown_notify_last_key is None and current_time < dt_time(15, 0):
                                             breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 15%달성·수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 → 10분봉 저가 대기")
@@ -828,7 +828,7 @@ def get_kis_1min_from_datetime_simul(
                                 sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%] (매도가:{close_price:,})"
                                 sell_signal_type = "FIXED_STOP"
                                 order_price      = close_price
-                                if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
+                                if verbose and breakdown_notify_last_key is None and current_time < dt_time(15, 0):
                                     breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 [시장 약세] 매도 진행")
@@ -838,7 +838,7 @@ def get_kis_1min_from_datetime_simul(
                                                    "reason": f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%]",
                                                    "signal_type": "FIXED_STOP",
                                                    "effective_stop": fixed_stop, "order_price": 0})                                
-                                if verbose and current_10min_key.strftime("%Y%m%d%H%M") != breakdown_notify_last_key:
+                                if verbose and breakdown_notify_last_key is None and current_time < dt_time(15, 0):
                                     breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 감지 → 10분봉 저가 대기")        
@@ -848,7 +848,7 @@ def get_kis_1min_from_datetime_simul(
                 _prevlow_warn_end = "161000" if trade_date.endswith("1119") else "151000"
                 if current_time >= _prevlow_start and current_time < _prevlow_warn_end and prev_low is not None and close_price < prev_low and int(prev_volume / 2) < acml_vol:
                         _cur_key_str = current_10min_key.strftime("%Y%m%d%H%M")
-                        if prevlow_warn_last_key is None or _cur_key_str > prevlow_warn_last_key:
+                        if prevlow_warn_last_key is None and current_time < dt_time(15, 0):
                             prevlow_warn_last_key = _cur_key_str
                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "prevlow_warn", prevlow_warn_last_key)
                             # 시장 흐름 기반 분석 (루프 전 조회한 _mkt_trend_pre 재사용)
@@ -1135,20 +1135,20 @@ def get_kis_1min_from_datetime_simul(
                                     current_10min_key_1 = get_10min_key(row["dt"])
                                     breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
                                                             "tenmin_low": None, "tenmin_vol_ok": None,
-                                                            "sell_label": "손절매도"})
+                                                            "sell_label": "최종이탈가 매도"})
                                     
                                     # 시장 단기 하락인 경우 10분봉 완성 후 매도 대기
                                     if _short_market_down:
                                         breakdown_wait_1["sell_on_candle_close"] = True
                                     
                                         _cur_key_str = current_10min_key_1.strftime("%Y%m%d%H%M")
-                                        if breakdown_wait_1["last_alert_tenmin_key"] is None or _cur_key_str > breakdown_wait_1["last_alert_tenmin_key"]:
+                                        if breakdown_wait_1["last_alert_tenmin_key"] is None and current_time < dt_time(15, 0):
                                             breakdown_wait_1["last_alert_tenmin_key"] = _cur_key_str
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 최종이탈가({exit_price:,})원 이탈 [시장 약세] 10분봉 완성 후 매도 대기")
                                     else:
                                         _cur_key_str = current_10min_key_1.strftime("%Y%m%d%H%M")    
-                                        if breakdown_wait_1["last_alert_tenmin_key"] is None or _cur_key_str > breakdown_wait_1["last_alert_tenmin_key"]:
+                                        if breakdown_wait_1["last_alert_tenmin_key"] is None and current_time < dt_time(15, 0):
                                             breakdown_wait_1["last_alert_tenmin_key"] = _cur_key_str
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 최종이탈가({exit_price:,})원 이탈 대기")
@@ -1157,20 +1157,20 @@ def get_kis_1min_from_datetime_simul(
                                     current_10min_key_1 = get_10min_key(row["dt"])
                                     breakdown_wait_1.update({"active": True, "tenmin_key": current_10min_key_1,
                                                             "tenmin_low": None, "tenmin_vol_ok": None,
-                                                            "sell_label": "이탈매도"})
+                                                            "sell_label": "이탈가 매도"})
                                     
                                     # 시장 단기 하락인 경우 10분봉 완성 후 매도 대기
                                     if _short_market_down:
                                         breakdown_wait_1["sell_on_candle_close"] = True
 
                                         _cur_key_str = current_10min_key_1.strftime("%Y%m%d%H%M")
-                                        if breakdown_wait_1["last_alert_tenmin_key"] is None or _cur_key_str > breakdown_wait_1["last_alert_tenmin_key"]:
+                                        if breakdown_wait_1["last_alert_tenmin_key"] is None and current_time < dt_time(15, 0):
                                             breakdown_wait_1["last_alert_tenmin_key"] = _cur_key_str
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 이탈가({stop_price:,})원 이탈 [시장 약세] 10분봉 완성 후 매도 대기")
                                     else:
                                         _cur_key_str = current_10min_key_1.strftime("%Y%m%d%H%M")
-                                        if breakdown_wait_1["last_alert_tenmin_key"] is None or _cur_key_str > breakdown_wait_1["last_alert_tenmin_key"]:
+                                        if breakdown_wait_1["last_alert_tenmin_key"] is None and current_time < dt_time(15, 0):
                                             breakdown_wait_1["last_alert_tenmin_key"] = _cur_key_str
                                             _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "1", breakdown_wait_1["last_alert_tenmin_key"])
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 이탈가({stop_price:,})원 이탈 대기")        
@@ -1568,6 +1568,69 @@ def _sync_market_trend_to_simul(trade_date: str, conn, prev_tot_evlu_amt=None):
 
 
 # ─────────────────────────────────────────
+# trail_price 보다 저가 미존재 대상 종가 갱신
+# ─────────────────────────────────────────
+def update_trail_price_at_close(conn, ac):
+    """trail_tp='3','4' 대상: proc_min 이후 trail_price 미만 저가 미존재 시 15:20 현재가로 trail_price 갱신."""
+    now = datetime.now()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT code, name, trail_price, proc_min, trail_day, trail_dtm
+        FROM {SIMUL_TABLE}
+        WHERE acct_no = %s AND trail_day = %s AND trail_tp IN ('3', '4')
+        ORDER BY code
+    """, (SIMUL_ACCT, today))
+    rows = cur.fetchall()
+    cur.close()
+
+    if not rows:
+        print("[시뮬] 15:20 trail_price 갱신 대상 없음")
+        return
+
+    target_dt = datetime.strptime(today + "152000", "%Y%m%d%H%M%S")
+
+    for code, name, trail_price, proc_min, trail_day, trail_dtm in rows:
+        trail_price = int(trail_price or 0)
+        if trail_price <= 0:
+            continue
+        proc_min_str = str(int(proc_min or 0)).zfill(6)
+        try:
+            proc_dt = datetime.strptime(trail_day + proc_min_str, "%Y%m%d%H%M%S")
+        except Exception:
+            continue
+
+        df = get_kis_1min_full_day(code, trail_day, "152000",
+                                    ac['access_token'], ac['app_key'], ac['app_secret'])
+        if df.empty:
+            print(f"[시뮬] [{name}({code})] 15:20 분봉 없음 → 스킵")
+            continue
+
+        df_range = df[(df["dt"] > proc_dt) & (df["dt"] <= target_dt)].copy()
+        if df_range.empty:
+            print(f"[시뮬] [{name}({code})] proc_min({proc_min_str}) 이후 분봉 없음 → 스킵")
+            continue
+
+        _low  = df_range["저가"].astype(int)
+        _high = df_range["고가"].astype(int)
+        if ((_low <= trail_price) & (_high >= trail_price)).any():
+            print(f"[시뮬] [{name}({code})] trail_price({trail_price:,}) 봉 범위 내 존재 → 미갱신")
+            continue
+
+        current_price = int(df_range.iloc[-1]["종가"])
+        upd_cur = conn.cursor()
+        upd_cur.execute(f"""
+            UPDATE {SIMUL_TABLE}
+            SET trail_price = %s, mod_dt = %s
+            WHERE acct_no = %s AND code = %s
+              AND trail_day = %s AND trail_dtm = %s
+              AND trail_tp IN ('3', '4')
+        """, (current_price, now, SIMUL_ACCT, code, trail_day, trail_dtm))
+        conn.commit()
+        upd_cur.close()
+        print(f"[시뮬] [{name}({code})] trail_price 갱신: {trail_price:,}→{current_price:,}원 (15:20 현재가)")
+
+
+# ─────────────────────────────────────────
 # 종목별 처리 (스레드)
 # ─────────────────────────────────────────
 def process_stock_simul(stock_info, ac, conn_stock):
@@ -1660,6 +1723,8 @@ def process_account_simul():
                     print(f"⚠️ [시뮬] [{stock_info[1]}-{stock_info[0]}] 오류: {e}")
                 finally:
                     conn_stock.close()
+
+        update_trail_price_at_close(conn_acct, ac)
 
         # 전체 종목 처리 완료 후 일별 잔고 집계 저장 (종가 기준 수익율 계산)
         _update_dly_trading_balance_simul(
