@@ -1568,28 +1568,28 @@ def _sync_market_trend_to_simul(trade_date: str, conn, prev_tot_evlu_amt=None):
 
 
 # ─────────────────────────────────────────
-# trail_price 보다 저가 미존재 대상 종가 갱신
+# proc_min 이후 1분봉 기준 trail_price 미존재 대상 종가 갱신
 # ─────────────────────────────────────────
 def update_trail_price_at_close(conn, ac):
-    """trail_tp='3','4' 대상: proc_min 이후 trail_price 미만 저가 미존재 시 15:20 현재가로 trail_price 갱신."""
+    """trail_tp='3','4' 대상: proc_min 이후 1분봉 기준 trail_price 미존재 시 15:20 현재가로 trail_price 갱신."""
     now = datetime.now()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT code, name, trail_price, proc_min, trail_day, trail_dtm
+        SELECT code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty
         FROM {SIMUL_TABLE}
-        WHERE acct_no = %s AND trail_day = %s AND trail_tp IN ('3', '4')
+        WHERE acct_no = %s AND trail_day = %s AND trail_tp IN ('3', '4') AND proc_min < '152000'
         ORDER BY code
     """, (SIMUL_ACCT, today))
     rows = cur.fetchall()
     cur.close()
 
     if not rows:
-        print("[시뮬] 15:20 trail_price 갱신 대상 없음")
+        print("[시뮬] 15:20 이전 trail_price 갱신 대상 없음")
         return
 
     target_dt = datetime.strptime(today + "152000", "%Y%m%d%H%M%S")
 
-    for code, name, trail_price, proc_min, trail_day, trail_dtm in rows:
+    for code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty in rows:
         trail_price = int(trail_price or 0)
         if trail_price <= 0:
             continue
@@ -1617,14 +1617,20 @@ def update_trail_price_at_close(conn, ac):
             continue
 
         current_price = int(df_range.iloc[-1]["종가"])
+        _trail_rate  = round((current_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0
+        _trail_amt   = current_price * trail_qty
         upd_cur = conn.cursor()
         upd_cur.execute(f"""
             UPDATE {SIMUL_TABLE}
-            SET trail_price = %s, mod_dt = %s
+            SET trail_price   = %s
+                , trail_rate  = %s
+                , trail_amt   = %s
+                , proc_min    = %s
+                , mod_dt      = %s
             WHERE acct_no = %s AND code = %s
               AND trail_day = %s AND trail_dtm = %s
               AND trail_tp IN ('3', '4')
-        """, (current_price, now, SIMUL_ACCT, code, trail_day, trail_dtm))
+        """, (current_price, _trail_rate, _trail_amt, '152000', now, SIMUL_ACCT, code, trail_day, trail_dtm))
         conn.commit()
         upd_cur.close()
         print(f"[시뮬] [{name}({code})] trail_price 갱신: {trail_price:,}→{current_price:,}원 (15:20 현재가)")
