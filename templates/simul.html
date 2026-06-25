@@ -909,7 +909,8 @@
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
             <div style="font-size:.72rem;color:#888;margin-bottom:4px">
               실적 트렌드
-              <span v-if="companyInfo.fnguide.fh_source==='DART'" style="color:#b8860b;font-size:.68rem">(DART 공시)</span>
+              <span v-if="companyInfo.fnguide.fh_source==='FnGuide-연간'" style="color:#1a4a7a;font-size:.68rem">(FnGuide 연간)</span>
+              <span v-else-if="companyInfo.fnguide.fh_source==='DART'" style="color:#b8860b;font-size:.68rem">(DART 공시)</span>
             </div>
             <div v-for="q in companyInfo.fnguide.financial_highlight.slice(-3)" :key="q.period"
                  style="display:flex;justify-content:space-between;font-size:.74rem;margin-bottom:2px">
@@ -942,10 +943,14 @@
       <!-- 탭1: 기업실적 (FnGuide Financial Highlight 분기별) -->
       <div v-if="companyTab==='financials'">
         <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
-          <!-- DART 폴백 안내 -->
+          <!-- 폴백 안내 -->
+          <div v-if="companyInfo.fnguide.fh_source==='FnGuide-연간'"
+               style="background:#f0f8ff;border:1px solid #b8d4f0;border-radius:7px;padding:7px 12px;font-size:.78rem;color:#1a4a7a;margin-bottom:8px">
+            ℹ️ FnGuide 분기 데이터 미수록 → FnGuide 연간 기준 표시
+          </div>
           <div v-if="companyInfo.fnguide.fh_source==='DART'"
                style="background:#fffbe6;border:1px solid #ffe58f;border-radius:7px;padding:7px 12px;font-size:.78rem;color:#7a5a00;margin-bottom:8px">
-            ⚠️ FnGuide 분기 데이터 미수록 → DART 공시 기준 표시 (이전분기 / 반기 / 사업보고서 순)
+            ⚠️ FnGuide 데이터 미수록 → DART 공시 기준 표시 (분기 → 반기 → 사업보고서 순)
           </div>
           <div style="overflow-x:auto">
             <table class="dart-table">
@@ -983,7 +988,11 @@
             </table>
           </div>
           <div class="dart-period" style="margin-top:6px">
-            출처: {{ companyInfo.fnguide.fh_source==='DART' ? 'DART 공시 (FnGuide 미수록)' : 'FnGuide Financial Highlight' }} (연결, 단위: 억원)
+            출처:
+            <span v-if="companyInfo.fnguide.fh_source==='FnGuide'">FnGuide Financial Highlight (분기)</span>
+            <span v-else-if="companyInfo.fnguide.fh_source==='FnGuide-연간'">FnGuide Financial Highlight (연간)</span>
+            <span v-else-if="companyInfo.fnguide.fh_source==='DART'">DART 공시 (FnGuide 미수록)</span>
+            &nbsp;(연결, 단위: 억원)
           </div>
         </template>
         <div v-else class="dart-empty">실적 데이터 없음</div>
@@ -1425,12 +1434,13 @@ createApp({
     const companyLoading = ref(false);
     const bizExpanded    = ref(false);
 
-    async function fetchCompanyInfo(code) {
+    async function fetchCompanyInfo(code, name = '') {
       if (!code || code.length !== 6) return;
       companyInfo.value    = null;
       companyLoading.value = true;
       try {
-        const res  = await fetch(`/api/dart/company-info?code=${code}`);
+        const params = name ? `code=${code}&name=${encodeURIComponent(name)}` : `code=${code}`;
+        const res  = await fetch(`/api/dart/company-info?${params}`);
         const data = await res.json();
         if (!data.error) {
           companyInfo.value = data;
@@ -1651,7 +1661,7 @@ createApp({
           const data = await res.json();
           if (data.name) form.value.name = data.name;
           await fetchStockInfo(code, form.value.buy_date);
-          fetchCompanyInfo(code);
+          fetchCompanyInfo(code, form.value.name);
         } else {
           const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
           const data = await res.json();
@@ -1659,7 +1669,7 @@ createApp({
             form.value.name = val;
             form.value.code = data.code;
             await fetchStockInfo(data.code, form.value.buy_date);
-            fetchCompanyInfo(data.code);
+            fetchCompanyInfo(data.code, val);
           }
         }
       } catch { /* 무시 */ } finally {

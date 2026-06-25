@@ -984,16 +984,17 @@ def api_active_stocks():
 DART_API_KEY  = 'a86677be2f044d30757379f277024be9b0989823'
 DART_BASE     = 'https://opendart.fss.or.kr/api'
 _dart_corp_map: dict | None = None
+_dart_corp_name_map: dict | None = None   # corp_name → corp_code
 _dart_corp_map_lock = _threading.Lock()
 _dart_biz_cache: dict = {}   # corp_code → biz summary
 _dart_exec_vote_cache: dict = {}  # corp_code → {name: voting_shares}
 
-def _load_dart_corp_map() -> dict:
-    """corpCode.xml 다운로드 → {stock_code: corp_code} 캐시 (최초 1회)."""
-    global _dart_corp_map
+def _load_dart_corp_map() -> tuple[dict, dict]:
+    """corpCode.xml 다운로드 → ({stock_code: corp_code}, {corp_name: corp_code}) 캐시 (최초 1회)."""
+    global _dart_corp_map, _dart_corp_name_map
     with _dart_corp_map_lock:
         if _dart_corp_map is not None:
-            return _dart_corp_map
+            return _dart_corp_map, _dart_corp_name_map
     import zipfile, io, xml.etree.ElementTree as ET
     try:
         r = requests.get(
@@ -1004,23 +1005,39 @@ def _load_dart_corp_map() -> dict:
         z    = zipfile.ZipFile(io.BytesIO(r.content))
         data = z.read(z.namelist()[0])
         root = ET.fromstring(data)
-        m    = {}
+        m  = {}
+        nm = {}
         for item in root.findall('.//list'):
             sc = (item.findtext('stock_code') or '').strip()
             cc = (item.findtext('corp_code')  or '').strip()
+            cn = (item.findtext('corp_name')  or '').strip()
             if sc and cc:
                 m[sc] = cc
+            if cn and cc:
+                nm[cn] = cc
         with _dart_corp_map_lock:
-            _dart_corp_map = m
-        return m
+            _dart_corp_map      = m
+            _dart_corp_name_map = nm
+        return m, nm
     except Exception as e:
         print(f"[DART] corpCode 로드 오류: {e}")
-        return {}
+        return {}, {}
 
-def _dart_stock_to_corp(stock_code: str) -> str | None:
-    """종목코드(6자리) → DART corp_code(8자리) 변환."""
-    m = _load_dart_corp_map()
-    return m.get(stock_code.zfill(6))
+def _dart_stock_to_corp(stock_code: str, stock_name: str = '') -> str | None:
+    """종목코드(6자리) → DART corp_code(8자리) 변환.
+    corpCode.xml에 없으면 stock_name으로 이름 기반 검색 (종목코드 불일치 대응)."""
+    m, nm = _load_dart_corp_map()
+    sc = stock_code.zfill(6)
+    if sc in m:
+        return m[sc]
+    # corpCode.xml 종목코드 불일치 → 종목명으로 검색
+    if stock_name and nm:
+        if stock_name in nm:
+            corp_code = nm[stock_name]
+            m[sc] = corp_code  # 캐시에 추가
+            print(f"[DART] 이름 매핑: {stock_code}({stock_name}) → {corp_code}")
+            return corp_code
+    return None
 
 def _dart_req(endpoint, params, timeout=12):
     p = {**params, 'crtfc_key': DART_API_KEY}
@@ -1045,7 +1062,7 @@ def _growth(cur, prev):
 def _get_is_account(rows, keyword):
     for r in rows:
         nm = (r.get('account_nm') or '').replace(' ', '')
-        if keyword in nm and r.get('sj_div') == 'IS':
+        if keyword in nm and r.get('sj_div') in ('IS', 'CIS'):
             return r
     return None
 
@@ -1578,26 +1595,46 @@ def _fnguide_data(code: str) -> dict:
                 }
 
         # ③ Financial Highlight (연결, 분기 4개)
-        fh_pos = html.find('highlight_D_A')
+        # 여러 ID 후보 시도 (연결=D, 별도=B; 연간=A, 분기=Q)
+        fh_pos = -1
+        for _fh_id in ('highlight_D_A', 'highlight_Y_A', 'highlight_B_A', 'highlight_D_Q'):
+            _p = html.find(_fh_id)
+            if _p >= 0:
+                fh_pos = _p
+                break
+
         if fh_pos >= 0:
             fh_end = html.find('</table>', fh_pos)
             fh_block = html[fh_pos: fh_end + 8] if fh_end > 0 else html[fh_pos: fh_pos + 16000]
 
-            # 기간 헤더: thead 안에서만 추출 (연 4 + 분기 4 = 8)
-            thead_m = _re2.search(r'<thead>(.*?)</thead>', fh_block, _re2.DOTALL)
+            # ─ 기간 헤더 파싱 ─────────────────────────────────────────
+            thead_m     = _re2.search(r'<thead>(.*?)</thead>', fh_block, _re2.DOTALL)
             periods_raw = _re2.findall(r'\d{4}/\d{2}', thead_m.group(1)) if thead_m else []
-            # 중복 허용 (2025/12 가 연간 + 분기 양쪽에 나올 수 있음)
-            all_periods = periods_raw[:8]  # 최대 8개
+            all_periods = periods_raw[:8]
 
-            # 현재일 기준 미래 여부
+            # thead 첫 행에서 연간 colspan 파악 (없으면 4 기본값)
+            annual_cnt = 4
+            if thead_m:
+                first_row_m = _re2.search(r'<tr[^>]*>(.*?)</tr>', thead_m.group(1), _re2.DOTALL)
+                if first_row_m:
+                    row0 = first_row_m.group(1)
+                    ann_m = _re2.search(
+                        r'colspan="(\d+)"[^>]*>(?:\s*<[^>]+>)*\s*연간', row0, _re2.DOTALL)
+                    if ann_m:
+                        annual_cnt = int(ann_m.group(1))
+
+            q_periods = all_periods[annual_cnt:] if len(all_periods) > annual_cnt else []
+
             from datetime import datetime as _dt
             today_ym = _dt.now().strftime('%Y/%m')
             def _is_est(p): return p >= today_ym
 
-            # 행 데이터
+            # ─ 행 데이터 파싱 ─────────────────────────────────────────
+            # 속성 순서 무관 & <div> 여부 무관 패턴으로 수정
             fin_rows = {}
             for row in _re2.finditer(
-                    r'<th scope="row" class="clf"><div>([^&<][^<]*)</div></th>(.*?)</tr>',
+                    r'<th\b[^>]*class="clf"[^>]*>\s*(?:<div[^>]*>)?\s*'
+                    r'([^<&][^<]{0,50}?)\s*(?:</div>)?\s*</th>(.*?)</tr>',
                     fh_block, _re2.DOTALL):
                 name = row.group(1).strip()
                 titles = _re2.findall(r'title="([^"]*)"', row.group(2))
@@ -1611,33 +1648,62 @@ def _fnguide_data(code: str) -> dict:
                 if name:
                     fin_rows[name] = vals
 
-            rev_v = fin_rows.get('매출액', [])
-            op_v  = fin_rows.get('영업이익', [])
-            net_v = fin_rows.get('당기순이익', [])
-            q_periods = all_periods[4:8] if len(all_periods) >= 8 else all_periods[len(all_periods)//2:]
+            print(f'[FnGuide] {code} annual_cnt={annual_cnt} q_periods={q_periods} rows={list(fin_rows.keys())}')
 
+            # 매출액: 일반기업 → 금융/보험/은행 순 폴백
+            rev_v = (fin_rows.get('매출액')
+                     or fin_rows.get('영업수익')
+                     or fin_rows.get('이자수익')
+                     or fin_rows.get('보험료수익')
+                     or fin_rows.get('수입보험료')
+                     or [])
+            op_v  = (fin_rows.get('영업이익')
+                     or fin_rows.get('영업이익(손실)')
+                     or [])
+            net_v = (fin_rows.get('당기순이익')
+                     or fin_rows.get('당기순이익(손실)')
+                     or fin_rows.get('순이익')
+                     or [])
+
+            def _make_row(period, rev, op, net, op_growth=None, report_type=''):
+                return {
+                    'period':      period,
+                    'is_estimate': _is_est(period),
+                    'report_type': report_type,
+                    'revenue':     rev,
+                    'op_profit':   op,
+                    'net_profit':  net,
+                    'op_margin':   round(op / rev * 100, 1) if op and rev and rev > 0 else None,
+                    'op_growth':   op_growth,
+                }
+
+            # 분기 데이터
             quarterly_fh = []
             for i, period in enumerate(q_periods):
-                qi = 4 + i
+                qi  = annual_cnt + i
                 rev = rev_v[qi] if qi < len(rev_v) else None
                 op  = op_v[qi]  if qi < len(op_v)  else None
                 net = net_v[qi] if qi < len(net_v) else None
-                # QoQ 증감률 (2번째 분기부터)
                 op_growth = None
                 if i > 0:
-                    prev_op = op_v[4 + i - 1] if (4 + i - 1) < len(op_v) else None
+                    prev_op = op_v[annual_cnt + i - 1] if (annual_cnt + i - 1) < len(op_v) else None
                     if op and prev_op and prev_op != 0:
                         op_growth = round((op - prev_op) / abs(prev_op) * 100, 1)
-                quarterly_fh.append({
-                    'period': period,
-                    'is_estimate': _is_est(period),
-                    'revenue':    rev,
-                    'op_profit':  op,
-                    'net_profit': net,
-                    'op_margin':  round(op / rev * 100, 1) if op and rev and rev > 0 else None,
-                    'op_growth':  op_growth,
-                })
+                quarterly_fh.append(_make_row(period, rev, op, net, op_growth))
+
+            # 연간 데이터 (분기 데이터 미존재시 폴백 후보)
+            annual_fh = []
+            for i, period in enumerate(all_periods[:annual_cnt]):
+                rev = rev_v[i] if i < len(rev_v) else None
+                op  = op_v[i]  if i < len(op_v)  else None
+                net = net_v[i] if i < len(net_v) else None
+                if rev is not None or op is not None or net is not None:
+                    annual_fh.append(_make_row(period, rev, op, net, report_type='연간'))
+
             result['financial_highlight'] = quarterly_fh
+            result['annual_highlight']    = annual_fh
+        else:
+            print(f'[FnGuide] {code} highlight 테이블 ID 미발견 (highlight_D_A 등 없음)')
 
         # ④ 동종업체 비교 (svdMainGrid10)
         pos10 = html.find('svdMainGrid10')
@@ -1696,12 +1762,13 @@ def _naver_news(code):
 @app.route('/api/dart/company-info')
 def dart_company_info():
     """DART Open API 기반 기업정보(기본정보·실적·주주·경영진) + Naver 뉴스 조회."""
-    code = request.args.get('code', '').strip().zfill(6)
+    code       = request.args.get('code', '').strip().zfill(6)
+    stock_name = request.args.get('name', '').strip()
     if not code or not code.isdigit():
         return jsonify({'error': '유효한 종목코드 필요'}), 400
 
-    # stock_code(6) → corp_code(8) 변환
-    corp_code = _dart_stock_to_corp(code)
+    # stock_code(6) → corp_code(8) 변환 (corpCode.xml 불일치 시 종목명으로 fallback)
+    corp_code = _dart_stock_to_corp(code, stock_name)
     if not corp_code:
         return jsonify({'error': f'DART corp_code 없음 ({code})'}), 404
 
@@ -1723,33 +1790,47 @@ def dart_company_info():
         biz_summary  = f_biz.result()
         fnguide      = f_fng.result()
 
-    # ── Financial Highlight 폴백 처리 ────────────────────────────────
-    # FnGuide 분기 중 revenue/op_profit/net_profit 모두 None인 항목 제외
-    fh_raw    = fnguide.get('financial_highlight', [])
-    fh_actual = [
-        q for q in fh_raw
-        if q.get('revenue') is not None
-        or q.get('op_profit') is not None
-        or q.get('net_profit') is not None
-    ]
-    if fh_actual:
-        fnguide['financial_highlight'] = fh_actual
+    # ── Financial Highlight 폴백 처리 ─────────────────────────────────────
+    # 우선순위: ① FnGuide 분기 → ② FnGuide 연간 → ③ DART 공시 (분기→반기→연간)
+    def _has_data(q):
+        return (q.get('revenue') is not None
+                or q.get('op_profit') is not None
+                or q.get('net_profit') is not None)
+
+    fh_qtr  = [q for q in fnguide.get('financial_highlight', []) if _has_data(q)]
+    fh_ann  = [q for q in fnguide.get('annual_highlight',    []) if _has_data(q)]
+
+    if fh_qtr:
+        # ① FnGuide 분기 데이터 사용
+        fnguide['financial_highlight'] = fh_qtr
         fnguide['fh_source'] = 'FnGuide'
+    elif fh_ann:
+        # ② FnGuide 연간 데이터로 폴백
+        fnguide['financial_highlight'] = fh_ann
+        fnguide['fh_source'] = 'FnGuide-연간'
     elif financials:
-        # DART 공시 데이터로 대체 (이전분기 → 반기 → 사업보고서 순)
-        fnguide['financial_highlight'] = [{
-            'period':      f['period'],
-            'report_type': f.get('report_type', ''),
-            'is_estimate': False,
-            'revenue':     f.get('revenue'),
-            'op_profit':   f.get('op_profit'),
-            'net_profit':  f.get('net_profit'),
-            'op_margin':   f.get('op_margin'),
-            'op_growth':   f.get('op_growth'),
-        } for f in (financials or [])[:4]]
-        fnguide['fh_source'] = 'DART'
+        # ③ DART 공시 데이터 순차 체크 (이전분기 → 반기 → 사업보고서)
+        dart_fh = []
+        for f in (financials or []):
+            if _has_data(f):
+                dart_fh.append({
+                    'period':      f['period'],
+                    'report_type': f.get('report_type', ''),
+                    'is_estimate': False,
+                    'revenue':     f.get('revenue'),
+                    'op_profit':   f.get('op_profit'),
+                    'net_profit':  f.get('net_profit'),
+                    'op_margin':   f.get('op_margin'),
+                    'op_growth':   f.get('op_growth'),
+                })
+                if dart_fh:  # 데이터 있는 첫 보고서 발견 시 중단
+                    break
+        fnguide['financial_highlight'] = dart_fh
+        fnguide['fh_source'] = 'DART' if dart_fh else 'none'
     else:
         fnguide['fh_source'] = 'none'
+    # annual_highlight는 내부 폴백용이므로 응답에서 제외
+    fnguide.pop('annual_highlight', None)
 
     est = corp_d.get('est_dt', '')
     if len(est) == 8:
