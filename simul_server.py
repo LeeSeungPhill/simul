@@ -1059,14 +1059,22 @@ def _dart_fin_one(corp_code, year, reprt_code):
             return d['list']
     return []
 
+_REPRT_TYPE_KR = {'11013': '분기', '11012': '반기', '11014': '분기', '11011': '연간'}
+
 def _dart_financials_multi(corp_code):
     now = datetime.now()
     cy  = now.year
-    PERIODS = [
-        (f'{cy}년 1분기',   cy,   '11013'),
+    cm  = now.month
+    # 보고서 제출 일정 기반 (1Q≥5월, 반기≥8월, 3Q≥11월, 연간≥3월)
+    PERIODS = []
+    if cm >= 11: PERIODS.append((f'{cy}년 3분기',   cy,   '11014'))
+    if cm >= 8:  PERIODS.append((f'{cy}년 반기',    cy,   '11012'))
+    if cm >= 5:  PERIODS.append((f'{cy}년 1분기',   cy,   '11013'))
+    PERIODS += [
         (f'{cy-1}년 연간',  cy-1, '11011'),
         (f'{cy-1}년 3분기', cy-1, '11014'),
         (f'{cy-1}년 반기',  cy-1, '11012'),
+        (f'{cy-1}년 1분기', cy-1, '11013'),
     ]
     def _fetch(label, y, rc):
         rows = _dart_fin_one(corp_code, y, rc)
@@ -1080,16 +1088,17 @@ def _dart_financials_multi(corp_code):
         net_eok = _to_eok(net.get('thstrm_amount') if net else None)
         prev_op = _to_eok(op.get('frmtrm_amount')  if op  else None)
         return {
-            'period':     label,
-            'revenue':    rev_eok,
-            'op_profit':  op_eok,
-            'net_profit': net_eok,
-            'op_margin':  round(op_eok / rev_eok * 100, 1) if rev_eok and op_eok else None,
-            'op_growth':  _growth(op_eok, prev_op),
+            'period':      label,
+            'report_type': _REPRT_TYPE_KR.get(rc, ''),
+            'revenue':     rev_eok,
+            'op_profit':   op_eok,
+            'net_profit':  net_eok,
+            'op_margin':   round(op_eok / rev_eok * 100, 1) if rev_eok and op_eok else None,
+            'op_growth':   _growth(op_eok, prev_op),
         }
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = [(lbl, ex.submit(_fetch, lbl, y, rc)) for lbl, y, rc in PERIODS]
-    return [f.result() for _, f in futs if f.result()]
+        futs = [(lbl, rc, ex.submit(_fetch, lbl, y, rc)) for lbl, y, rc in PERIODS]
+    return [f.result() for _, _, f in futs if f.result()]
 
 def _dart_shareholders_latest(corp_code):
     """주주에 관한 사항 — 1분기→반기→3분기→사업보고서 순으로 최신 우선.
@@ -1713,6 +1722,34 @@ def dart_company_info():
         executives   = f_exec.result()
         biz_summary  = f_biz.result()
         fnguide      = f_fng.result()
+
+    # ── Financial Highlight 폴백 처리 ────────────────────────────────
+    # FnGuide 분기 중 revenue/op_profit/net_profit 모두 None인 항목 제외
+    fh_raw    = fnguide.get('financial_highlight', [])
+    fh_actual = [
+        q for q in fh_raw
+        if q.get('revenue') is not None
+        or q.get('op_profit') is not None
+        or q.get('net_profit') is not None
+    ]
+    if fh_actual:
+        fnguide['financial_highlight'] = fh_actual
+        fnguide['fh_source'] = 'FnGuide'
+    elif financials:
+        # DART 공시 데이터로 대체 (이전분기 → 반기 → 사업보고서 순)
+        fnguide['financial_highlight'] = [{
+            'period':      f['period'],
+            'report_type': f.get('report_type', ''),
+            'is_estimate': False,
+            'revenue':     f.get('revenue'),
+            'op_profit':   f.get('op_profit'),
+            'net_profit':  f.get('net_profit'),
+            'op_margin':   f.get('op_margin'),
+            'op_growth':   f.get('op_growth'),
+        } for f in (financials or [])[:4]]
+        fnguide['fh_source'] = 'DART'
+    else:
+        fnguide['fh_source'] = 'none'
 
     est = corp_d.get('est_dt', '')
     if len(est) == 8:

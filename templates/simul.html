@@ -907,10 +907,17 @@
           </template>
           <!-- 최근 분기 영업이익률 트렌드 -->
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
-            <div style="font-size:.72rem;color:#888;margin-bottom:4px">최근 분기 실적 트렌드</div>
+            <div style="font-size:.72rem;color:#888;margin-bottom:4px">
+              실적 트렌드
+              <span v-if="companyInfo.fnguide.fh_source==='DART'" style="color:#b8860b;font-size:.68rem">(DART 공시)</span>
+            </div>
             <div v-for="q in companyInfo.fnguide.financial_highlight.slice(-3)" :key="q.period"
                  style="display:flex;justify-content:space-between;font-size:.74rem;margin-bottom:2px">
-              <span style="color:#666">{{ q.period }}<span v-if="q.is_estimate" style="color:#e67e22;font-size:.65rem"> (E)</span></span>
+              <span style="color:#666">
+                {{ q.period }}
+                <span v-if="q.is_estimate" style="color:#e67e22;font-size:.65rem"> (E)</span>
+                <span v-if="q.report_type" style="color:#1a73e8;font-size:.65rem"> ({{ q.report_type }})</span>
+              </span>
               <span>
                 <b :style="{color: q.op_profit&&q.op_profit>0?'#2dc653':'#e63946'}">
                   영업이익 {{ q.op_profit ? q.op_profit.toLocaleString('ko-KR') : '-' }}억
@@ -935,11 +942,16 @@
       <!-- 탭1: 기업실적 (FnGuide Financial Highlight 분기별) -->
       <div v-if="companyTab==='financials'">
         <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
+          <!-- DART 폴백 안내 -->
+          <div v-if="companyInfo.fnguide.fh_source==='DART'"
+               style="background:#fffbe6;border:1px solid #ffe58f;border-radius:7px;padding:7px 12px;font-size:.78rem;color:#7a5a00;margin-bottom:8px">
+            ⚠️ FnGuide 분기 데이터 미수록 → DART 공시 기준 표시 (이전분기 / 반기 / 사업보고서 순)
+          </div>
           <div style="overflow-x:auto">
             <table class="dart-table">
               <thead>
                 <tr>
-                  <th>분기</th>
+                  <th>기간</th>
                   <th>매출액(억원)</th>
                   <th>영업이익(억원)</th>
                   <th>QoQ증감률</th>
@@ -950,7 +962,11 @@
               <tbody>
                 <tr v-for="q in companyInfo.fnguide.financial_highlight" :key="q.period"
                     :style="{background: q.is_estimate ? '#fffbf0' : ''}">
-                  <td>{{ q.period }}<span v-if="q.is_estimate" style="color:#e67e22;font-size:.68rem"> (E)</span></td>
+                  <td>
+                    {{ q.period }}
+                    <span v-if="q.is_estimate" style="color:#e67e22;font-size:.68rem"> (E)</span>
+                    <span v-if="q.report_type" style="display:inline-block;margin-left:4px;padding:1px 5px;border-radius:4px;font-size:.65rem;font-weight:600;background:#e8f4fd;color:#1a73e8">{{ q.report_type }}</span>
+                  </td>
                   <td>{{ q.revenue   ? q.revenue.toLocaleString('ko-KR')   : '-' }}</td>
                   <td :style="{fontWeight:600,color:q.op_profit!=null?(q.op_profit>=0?'#2dc653':'#e63946'):''}">
                     {{ q.op_profit  ? q.op_profit.toLocaleString('ko-KR')  : '-' }}
@@ -966,9 +982,11 @@
               </tbody>
             </table>
           </div>
-          <div class="dart-period" style="margin-top:6px">출처: FnGuide Financial Highlight (연결, 단위: 억원)</div>
+          <div class="dart-period" style="margin-top:6px">
+            출처: {{ companyInfo.fnguide.fh_source==='DART' ? 'DART 공시 (FnGuide 미수록)' : 'FnGuide Financial Highlight' }} (연결, 단위: 억원)
+          </div>
         </template>
-        <div v-else class="dart-empty">FnGuide 실적 데이터 없음</div>
+        <div v-else class="dart-empty">실적 데이터 없음</div>
       </div>
 
       <!-- 탭2: 주주현황 -->
