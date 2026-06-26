@@ -6,6 +6,7 @@ import io
 import subprocess
 import requests
 import json
+import re
 import threading as _threading
 import pandas as pd
 import urllib3
@@ -943,6 +944,360 @@ def api_delete_all():
         return jsonify({'error': str(e)}), 500
 
 
+def _fetch_daily_ohlcv(ac, code):
+    """FHKST01010400: 일봉 OHLCV 최근 100거래일 (output 리스트, 최신→과거 내림차순).
+    필드: stck_bsop_date, stck_clpr, stck_oprc, stck_hgpr, stck_lwpr, acml_vol"""
+    try:
+        r = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            headers=_kis_headers(ac, "FHKST01010400"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                    "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+            verify=False, timeout=10
+        )
+        d = r.json()
+        rows = d.get('output') or []
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+def _fetch_short_selling(ac, code):
+    """FHPST04830000: 일별 공매도 추이 (output2, 최신→과거).
+    필드: stck_bsop_date, ssts_vol_rlim(공매도비율%)"""
+    from datetime import timedelta
+    today  = datetime.now().strftime('%Y%m%d')
+    d60ago = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
+    try:
+        r = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-short-over",
+            headers=_kis_headers(ac, "FHPST04830000"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                    "FID_INPUT_DATE_1": d60ago, "FID_INPUT_DATE_2": today},
+            verify=False, timeout=10
+        )
+        d = r.json()
+        if d.get('rt_cd') == '0':
+            rows = d.get('output2') or []
+            return rows if isinstance(rows, list) else []
+        return []
+    except Exception:
+        return []
+
+def _fetch_investor(ac, code):
+    """FHKST01010900: 최근 30일 투자자별 거래 리스트 (최신→과거, frgn/orgn_ntby_tr_pbmn 포함)."""
+    try:
+        r = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers=_kis_headers(ac, "FHKST01010900"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+            verify=False, timeout=10
+        )
+        d = r.json()
+        if d.get('rt_cd') == '0' and isinstance(d.get('output'), list):
+            return d['output']
+        return []
+    except Exception:
+        return []
+
+def _fetch_cur_price_out(ac, code):
+    try:
+        r = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers=_kis_headers(ac, "FHKST01010100"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+            verify=False, timeout=10
+        )
+        d = r.json()
+        return d['output'] if d.get('rt_cd') == '0' and d.get('output') else None
+    except Exception:
+        return None
+
+def _adx(highs, lows, closes, period=14):
+    """Wilder's ADX. 입력은 오름차순(과거→최신). (adx, +DI, -DI) 반환."""
+    n = len(highs)
+    if n < period * 2 + 1:
+        return None, None, None
+    trs, pDMs, mDMs = [], [], []
+    for i in range(1, n):
+        h, l, pc = highs[i], lows[i], closes[i-1]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        up, dn = highs[i] - highs[i-1], lows[i-1] - lows[i]
+        pDMs.append(up   if up > dn and up > 0   else 0.0)
+        mDMs.append(dn   if dn > up and dn > 0   else 0.0)
+    def ws(arr, p):
+        s = sum(arr[:p]); res = [s]
+        for x in arr[p:]:
+            s = s - s / p + x; res.append(s)
+        return res
+    def ws_avg(arr, p):
+        s = sum(arr[:p]) / p; res = [s]
+        for x in arr[p:]:
+            s = s + (x - s) / p; res.append(s)
+        return res
+    atr_s = ws(trs, period); pdi_s = ws(pDMs, period); mdi_s = ws(mDMs, period)
+    dxs = []
+    for a, p, m in zip(atr_s, pdi_s, mdi_s):
+        pd_ = p / a * 100 if a else 0; md_ = m / a * 100 if a else 0
+        dxs.append(abs(pd_ - md_) / (pd_ + md_) * 100 if (pd_ + md_) else 0)
+    adx_s    = ws_avg(dxs, period)
+    a_last   = atr_s[-1]
+    plus_di  = pdi_s[-1] / a_last * 100 if a_last else 0
+    minus_di = mdi_s[-1] / a_last * 100 if a_last else 0
+    return adx_s[-1], plus_di, minus_di
+
+def _obv_trend(closes, volumes, n=5):
+    """최근 n일 OBV 변화율(%). closes/volumes는 최신→과거(내림차순)."""
+    cls  = list(reversed(closes))
+    vols = list(reversed(volumes))
+    obv  = 0; obs = [0]
+    for i in range(1, len(cls)):
+        if   cls[i] > cls[i-1]: obv += vols[i]
+        elif cls[i] < cls[i-1]: obv -= vols[i]
+        obs.append(obv)
+    if len(obs) < n + 1: return 0.0
+    prev = obs[-(n+1)]
+    return (obs[-1] - prev) / abs(prev) * 100 if abs(prev) > 1 else 0.0
+
+def _calc_chart_score(rows):
+    """rows: FHKST01010400 output (최신→과거 내림차순)."""
+    if not rows or len(rows) < 25:
+        return {'score': None, 'detail': {}}
+    def _f(v):
+        try: return float(v)
+        except: return 0.0
+    closes  = [_f(r.get('stck_clpr', 0)) for r in rows]
+    highs   = [_f(r.get('stck_hgpr', 0)) for r in rows]
+    lows    = [_f(r.get('stck_lwpr', 0)) for r in rows]
+    volumes = [_f(r.get('acml_vol',  0)) for r in rows]
+    cur = closes[0]
+    ma5  = sum(closes[:5])  / 5
+    ma20 = sum(closes[:20]) / 20
+    ma60 = sum(closes[:60]) / 60 if len(closes) >= 60 else None
+
+    # ── 추세강도 MA5/20/60 (30점) ──────────────────────────────
+    if ma60:
+        if   ma5 > ma20 > ma60:                          trend_sc = 30
+        elif ma5 > ma20 and ma20 < ma60:                 trend_sc = 22
+        elif ma5 > ma60 and ma5 <= ma20:                 trend_sc = 16
+        elif abs(ma5 - ma20) / ma20 < 0.01:             trend_sc = 10
+        elif ma5 < ma20 and ma20 > ma60:                 trend_sc =  5
+        else:                                            trend_sc =  0
+    else:
+        if   ma5 > ma20 * 1.02:  trend_sc = 22
+        elif ma5 > ma20:         trend_sc = 16
+        elif ma5 > ma20 * 0.99:  trend_sc = 10
+        else:                    trend_sc =  0
+
+    # ── ADX (25점) ──────────────────────────────────────────────
+    asc_h = list(reversed(highs)); asc_l = list(reversed(lows)); asc_c = list(reversed(closes))
+    adx, plus_di, minus_di = _adx(asc_h, asc_l, asc_c)
+    if adx is None:
+        adx_sc = 8
+    elif adx >= 40 and plus_di > minus_di:   adx_sc = 25
+    elif adx >= 25 and plus_di > minus_di:   adx_sc = 20
+    elif adx >= 25 and plus_di <= minus_di:  adx_sc =  5
+    elif adx >= 20:                          adx_sc = 12
+    else:                                    adx_sc =  8
+
+    # ── 이격도 MA20 (20점) ───────────────────────────────────────
+    deviation = (cur - ma20) / ma20 * 100 if ma20 else 0.0
+    d = deviation
+    if   -3  <= d <=  5:   dev_sc = 20
+    elif  5  <  d <= 10:   dev_sc = 15
+    elif -8  <= d <  -3:   dev_sc = 15
+    elif -15 <= d <  -8:   dev_sc = 12
+    elif 10  <  d <= 15:   dev_sc = 10
+    elif  d < -15:         dev_sc =  8
+    else:                  dev_sc =  5   # d > 15
+
+    # ── 거래량비율 5일/20일 (15점) ────────────────────────────────
+    vol_avg5  = sum(volumes[:5])  / 5
+    vol_avg20 = sum(volumes[:20]) / 20
+    vol_ratio = vol_avg5 / vol_avg20 * 100 if vol_avg20 else 100
+    v = vol_ratio
+    if   v > 150:  vol_sc = 15
+    elif v > 120:  vol_sc = 12
+    elif v >  90:  vol_sc =  9
+    elif v >  70:  vol_sc =  6
+    else:          vol_sc =  3
+
+    # ── 전일대비거래량 (10점) ─────────────────────────────────────
+    vod = volumes[0] / volumes[1] * 100 if len(volumes) >= 2 and volumes[1] > 0 else 100
+    if   vod > 150:  vod_sc = 10
+    elif vod > 120:  vod_sc =  8
+    elif vod >  80:  vod_sc =  6
+    elif vod >  50:  vod_sc =  4
+    else:            vod_sc =  2
+
+    return {
+        'score': trend_sc + adx_sc + dev_sc + vol_sc + vod_sc,
+        'detail': {
+            'ma5': round(ma5), 'ma20': round(ma20),
+            'ma60': round(ma60) if ma60 else None,
+            'trend_score': trend_sc,
+            'adx': round(adx, 1) if adx else None,
+            'plus_di': round(plus_di, 1) if plus_di else None,
+            'minus_di': round(minus_di, 1) if minus_di else None,
+            'adx_score': adx_sc,
+            'deviation': round(deviation, 2), 'deviation_score': dev_sc,
+            'vol_ratio_5_20': round(vol_ratio, 1), 'vol_score': vol_sc,
+            'vod_ratio': round(vod, 1), 'vod_score': vod_sc,
+        }
+    }
+
+def _calc_supply_score(ohlcv_rows, inv_rows, price_out, ssts_rows=None):
+    """ohlcv_rows: FHKST01010400 output (OHLCV, OBV용)
+       inv_rows:   inquire-investor output list (외국인/기관 거래대금)
+       price_out:  inquire-price output (대차잔고비율)
+       ssts_rows:  공매도 일별 추이 rows (ssts_vol_rlim 포함, 없으면 None)"""
+    if not inv_rows:
+        return {'score': None, 'detail': {}}
+
+    def _si(v):
+        try: return int(v)
+        except: return 0
+
+    def _sf(v):
+        try: return float(v)
+        except: return 0.0
+
+    n5 = min(5, len(inv_rows))
+    # 외국인/기관 5일 순매수 거래대금 (백만원 → 억원, 빈 문자열 안전 처리)
+    frgn_5d = sum(_si(r.get('frgn_ntby_tr_pbmn', 0)) for r in inv_rows[:n5]) / 100
+    orgn_5d = sum(_si(r.get('orgn_ntby_tr_pbmn', 0)) for r in inv_rows[:n5]) / 100
+
+    # 공매도 5일 평균비율 (ssts_rows 없으면 0)
+    if ssts_rows:
+        nd5 = min(5, len(ssts_rows))
+        ssts_avg = sum(_sf(r.get('ssts_vol_rlim', 0)) for r in ssts_rows[:nd5]) / nd5
+    else:
+        ssts_avg = 0.0
+
+    # 대차잔고비율 (당일)
+    loan_rate = _sf((price_out or {}).get('whol_loan_rmnd_rate', 0))
+
+    # OBV 5일 변화율 (OHLCV 없으면 0)
+    obv_chg = 0.0
+    if ohlcv_rows and len(ohlcv_rows) >= 6:
+        closes  = [_sf(r.get('stck_clpr', 0)) for r in ohlcv_rows]
+        volumes = [_sf(r.get('acml_vol',  0)) for r in ohlcv_rows]
+        obv_chg = _obv_trend(closes, volumes, n=5)
+
+    # ── 외국인 5일 거래대금 (30점) ───────────────────────────────
+    fr = frgn_5d
+    if   fr >  200:  frgn_sc = 30
+    elif fr >   50:  frgn_sc = 24
+    elif fr >   10:  frgn_sc = 18
+    elif fr >    0:  frgn_sc = 14
+    elif fr >  -10:  frgn_sc =  8
+    elif fr >  -50:  frgn_sc =  3
+    else:            frgn_sc =  0
+
+    # ── 기관 5일 거래대금 (25점) ─────────────────────────────────
+    og = orgn_5d
+    if   og >  200:  orgn_sc = 25
+    elif og >   50:  orgn_sc = 20
+    elif og >   10:  orgn_sc = 15
+    elif og >    0:  orgn_sc = 11
+    elif og >  -10:  orgn_sc =  6
+    elif og >  -50:  orgn_sc =  2
+    else:            orgn_sc =  0
+
+    # ── 공매도 5일 평균비율 (20점, 역배점) ───────────────────────
+    sv = ssts_avg
+    if   sv <  1:  ssts_sc = 20
+    elif sv <  2:  ssts_sc = 16
+    elif sv <  3:  ssts_sc = 12
+    elif sv <  5:  ssts_sc =  8
+    elif sv < 10:  ssts_sc =  4
+    else:          ssts_sc =  0
+
+    # ── 대차잔고비율 (15점, 역배점) ──────────────────────────────
+    lr = loan_rate
+    if   lr <  0.5:  loan_sc = 15
+    elif lr <  1.0:  loan_sc = 12
+    elif lr <  2.0:  loan_sc =  9
+    elif lr <  5.0:  loan_sc =  5
+    elif lr < 10.0:  loan_sc =  2
+    else:            loan_sc =  0
+
+    # ── OBV 5일 추세 (10점) ─────────────────────────────────────
+    if   obv_chg >  3:  obv_sc = 10
+    elif obv_chg >  0:  obv_sc =  7
+    elif obv_chg > -3:  obv_sc =  5
+    else:               obv_sc =  2
+
+    return {
+        'score': frgn_sc + orgn_sc + ssts_sc + loan_sc + obv_sc,
+        'detail': {
+            'frgn_5d_eok':  round(frgn_5d, 1),  'frgn_score': frgn_sc,
+            'orgn_5d_eok':  round(orgn_5d, 1),  'orgn_score': orgn_sc,
+            'ssts_5d_avg':  round(ssts_avg, 2),  'ssts_score': ssts_sc,
+            'loan_rate':    loan_rate,            'loan_score': loan_sc,
+            'obv_chg_pct':  round(obv_chg, 2),   'obv_score':  obv_sc,
+        }
+    }
+
+
+@app.route('/api/stock-scores')
+def stock_scores():
+    """종목 수급점수(외국인·기관·공매도·대차잔고·OBV) + 차트점수(추세·ADX·이격도·거래량·전일대비거래량) 계산."""
+    code = request.args.get('code', '').strip().zfill(6)
+    if not code or not code.isdigit():
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+    ac = _get_api_account()
+    if not ac:
+        return jsonify({'error': 'API 계좌 정보 없음'}), 500
+    try:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            f_ohlcv = ex.submit(_fetch_daily_ohlcv,    ac, code)
+            f_ssts  = ex.submit(_fetch_short_selling,   ac, code)
+            f_inv   = ex.submit(_fetch_investor,        ac, code)
+            f_price = ex.submit(_fetch_cur_price_out,   ac, code)
+        ohlcv = f_ohlcv.result()
+        ssts  = f_ssts.result()
+        inv   = f_inv.result()
+        price = f_price.result()
+        chart  = _calc_chart_score(ohlcv)
+        supply = _calc_supply_score(ohlcv, inv, price, ssts_rows=ssts)
+
+        def _pf(v):
+            try: return float(v) if str(v).strip() not in ('', '0', '0.00') else None
+            except: return None
+
+        def _pf_pos(v):
+            try:
+                s = str(v).strip()
+                return round(max(0.0, float(s)), 2) if s else None
+            except: return None
+
+        per_v = _pf_pos((price or {}).get('per'))
+        pbr_v = _pf_pos((price or {}).get('pbr'))
+        eps   = _pf((price or {}).get('eps'))
+        bps   = _pf((price or {}).get('bps'))
+        roe   = round(eps / bps * 100, 1) if eps and bps else None
+
+        # 공매도(%): ssts_rows 최신일 값 우선, 없으면 price 당일 체결량/거래량 추정
+        ssts_pct = None
+        if ssts:
+            ssts_pct = _pf(ssts[0].get('ssts_vol_rlim'))
+        if ssts_pct is None and price:
+            last_ssts = _pf(price.get('last_ssts_cntg_qty'))
+            acml_vol  = _pf(price.get('acml_vol'))
+            if last_ssts and acml_vol:
+                ssts_pct = round(last_ssts / acml_vol * 100, 2)
+
+        info = {
+            'per':  per_v if per_v is not None else 0.0,
+            'pbr':  pbr_v if pbr_v is not None else 0.0,
+            'roe':  roe,
+            'ssts': ssts_pct,
+        }
+        return jsonify({'chart': chart, 'supply': supply, 'info': info})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/active-stocks')
 def api_active_stocks():
     """매도/변경 대상 활성 종목 조회 (trail_tp IN ('1','2','L'))."""
@@ -1409,6 +1764,244 @@ def _dart_exec_voting_map(corp_code: str) -> dict:
     return result
 
 
+_naver_reports_cache: dict = {}
+
+def _naver_reports(code: str, max_reports: int = 10) -> dict:
+    """네이버증권 모바일 API — 종목별 리서치 리포트 (최근 10건).
+    반환: {reports, consensus, invest_points}"""
+    import re
+    from collections import Counter
+
+    # 캐시 키에 현재 분기 포함 — 분기가 바뀌거나 서버 재시작 없이도 분기 필터 갱신
+    _now_pre  = datetime.now()
+    _q_pre    = (_now_pre.month - 1) // 3 + 1
+    _cache_key = f"{code}:{str(_now_pre.year)[2:]}Q{_q_pre}"
+    if _cache_key in _naver_reports_cache:
+        return _naver_reports_cache[_cache_key]
+
+    empty = {'reports': [], 'consensus': None, 'invest_points': []}
+    try:
+        r = requests.get(
+            f'https://m.stock.naver.com/api/research/stock/{code}',
+            params={'pageSize': max_reports, 'page': 1},
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                     'Referer': 'https://m.stock.naver.com/'},
+            timeout=8
+        )
+        if r.status_code != 200:
+            return empty
+        items = json.loads(r.content.decode('utf-8'))
+        if not isinstance(items, list) or not items:
+            return empty
+    except Exception:
+        return empty
+
+    OPINION_KW = [
+        ('강력매수', '강력매수'), ('적극매수', '적극매수'), ('비중확대', '비중확대'),
+        ('매수', '매수'), ('Trading Buy', '매수'), ('OutPerform', '매수'), ('BUY', '매수'),
+        ('중립', '중립'), ('HOLD', '중립'), ('Hold', '중립'), ('시장수익률', '중립'),
+        ('매도', '매도'), ('SELL', '매도'),
+    ]
+
+    def _parse_target(text):
+        m = re.search(r'목표주가[를\s:]*(\d[\d,]+)\s*원', text)
+        if m:
+            return int(m.group(1).replace(',', ''))
+        m2 = re.search(r'목표주가[를\s:]*(\d+)\s*만원', text)
+        if m2:
+            return int(m2.group(1)) * 10000
+        return None
+
+    def _parse_opinion(text):
+        for kw, label in OPINION_KW:
+            if kw in text:
+                return label
+        return None
+
+    reports, targets, opinions, full_previews = [], [], [], []
+
+    for item in items:
+        preview = item.get('previewContent', '')
+        target  = _parse_target(preview)
+        opinion = _parse_opinion(preview)
+        rid     = item.get('researchId')
+        reports.append({
+            'id':      rid,
+            'title':   item.get('title', ''),
+            'firm':    item.get('brokerName', ''),
+            'date':    item.get('writeDate', ''),
+            'target':  target,
+            'opinion': opinion,
+            'preview': preview[:150].rstrip(),
+            'url':     f'https://finance.naver.com/research/company_read.naver?nid={rid}',
+        })
+        full_previews.append(preview)
+        if target:  targets.append(target)
+        if opinion: opinions.append(opinion)
+
+    # 컨센서스
+    consensus = None
+    if reports:
+        top_opinion = Counter(opinions).most_common(1)[0][0] if opinions else None
+        consensus = {
+            'opinion':      top_opinion,
+            'target_avg':   round(sum(targets) / len(targets)) if targets else None,
+            'target_high':  max(targets) if targets else None,
+            'target_low':   min(targets) if targets else None,
+            'report_count': len(reports),
+        }
+
+    # 투자포인트: 완성된 문장/표현으로만 구성 (실적·매출 전망 우선)
+    PERF_KW      = re.compile(r'영업이익|매출액|매출|순이익|실적|분기|반기|연간|성장|전망|YoY|QoQ|전년|전분기|증가|감소|흑자|적자|기대|예상|가이던스|EPS|BPS|ROE|수익성|원가|마진|점유율|출하|수주|수요|공급')
+    SENT_BOILER  = re.compile(r'목표주가|투자의견|매수의견|(?:매수|중립|매도|BUY|HOLD|SELL)[^\w]|유지|상향|하향')
+    TITLE_BOILER = re.compile(r'목표주가|투자의견|매수의견|(?:매수|중립|매도|BUY|HOLD|SELL)[^\w]')  # 제목엔 상향/하향 허용
+    QUANT_KW     = re.compile(r'영업이익|매출액|순이익|EPS|BPS|ROE|YoY|QoQ|\d+조|\d+억|\d+%')
+    _SENT_SP     = re.compile(r'(?<!\d)\.(?!\d)|。|\n|[■▶●◆▷►•◉▪]')
+
+    def _clean_sent(s: str) -> str:
+        s = re.sub(r'^\s*[\[【\(][^\]】\)]{1,20}[\]】\)]\s*', '', s)
+        s = re.sub(r'^\s*[■▶●◆▷►•◉▪\-\*]+\s*', '', s)
+        s = re.sub(r'^\s*\d[A-Z0-9F]*\s*(?:Preview|Review|Update|Comment)\s*[:：]\s*', '', s, flags=re.IGNORECASE)
+        m = re.match(r'^([^:：]{2,40}[:：])\s*(.*)', s, re.DOTALL)
+        if m and not QUANT_KW.search(m.group(1)) and len(m.group(2)) > 10:
+            s = m.group(2)
+        return s.strip()
+
+    def _trim_to_complete(s: str, min_len: int = 20) -> str:
+        """마지막 완성 문장 어미까지 자른다. 완성 불가능하면 빈 문자열."""
+        s = s.strip()
+        if len(s) >= min_len and re.search(r'[가-힣]\s*$', s):
+            return s
+        pos_list = [m.end() for m in re.finditer(r'[다요]\s*(?=[^가-힣]|$)', s)]
+        if pos_list:
+            t = s[:pos_list[-1]].rstrip('.,! ')
+            if len(t) >= min_len and re.search(r'[가-힣]\s*$', t):
+                return t
+        return ''
+
+    def _scrape_report_para(nid) -> str:
+        """네이버 리서치 리포트 본문 첫 완성 문장 스크래핑."""
+        if not nid:
+            return ''
+        try:
+            url = f'https://finance.naver.com/research/company_read.naver?nid={nid}&page=1'
+            rv = requests.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': 'https://finance.naver.com/research/',
+            }, timeout=7)
+            if rv.status_code != 200:
+                return ''
+            body = rv.text
+            raw = ''
+            for pat in [
+                r'<td[^>]+class="view_cnt"[^>]*>(.*?)</td>',
+                r'<td[^>]+class="[^"]*view_cnt[^"]*"[^>]*>(.*?)</td>',
+                r'<div[^>]+class="[^"]*view_cnt[^"]*"[^>]*>(.*?)</div>',
+            ]:
+                m2 = re.search(pat, body, re.DOTALL)
+                if m2:
+                    raw = m2.group(1)
+                    break
+            if not raw:
+                return ''
+            raw = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL)
+            raw = re.sub(r'<style[^>]*>.*?</style>', '', raw, flags=re.DOTALL)
+            text = re.sub(r'<[^>]+>', ' ', raw)
+            text = re.sub(r'\s+', ' ', text).strip()
+            # 완성 문장 2개 추출
+            sents = re.split(r'(?<=[다요])\s+', text)
+            parts = [s.strip() for s in sents if len(s.strip()) >= 20][:2]
+            return ' '.join(parts)[:200] if parts else ''
+        except Exception:
+            return ''
+
+    # ── 현재 분기 범위 계산 ────────────────────────────────────────────────
+    _now      = datetime.now()
+    _q_num    = (_now.month - 1) // 3 + 1          # 1~4
+    _q_yr2    = str(_now.year)[2:]                  # '26'
+    _pq_num   = _q_num - 1 if _q_num > 1 else 4
+    _pq_yr2   = _q_yr2 if _q_num > 1 else str(int(_q_yr2) - 1)
+    _q_start  = datetime(_now.year, (_q_num - 1) * 3 + 1, 1).strftime('%Y-%m-%d')
+
+    # 이전 분기만 언급하는 문장 패턴 (현재/미래 키워드가 없으면 제외)
+    PREV_Q_PAT  = re.compile(
+        rf'{_pq_num}Q{_pq_yr2}|{_pq_yr2}년?\s*{_pq_num}분기|전분기|직전분기'
+    )
+    CURR_FWD_PAT = re.compile(
+        rf'{_q_num}Q{_q_yr2}|{_q_yr2}년?\s*{_q_num}분기'
+        rf'|{_q_yr2}F|FY{_q_yr2}|전망|예상|기대|가이던스|하반기|연간|향후|올해'
+    )
+
+    def _is_prev_q_only(text: str) -> bool:
+        """이전 분기만 언급하고 현재·미래 관련 내용이 없으면 True."""
+        return bool(PREV_Q_PAT.search(text)) and not bool(CURR_FWD_PAT.search(text))
+
+    # ── 현재 분기 리포트만 사용 (없으면 invest_points 비움) ────────────────
+    cq_pairs    = [(r, p) for r, p in zip(reports, full_previews)
+                   if r.get('date', '') >= _q_start]
+    if not cq_pairs:
+        result = {'reports': reports, 'consensus': consensus, 'invest_points': []}
+        _naver_reports_cache[code] = result
+        return result
+
+    cq_reports  = [r for r, _ in cq_pairs]
+    cq_previews = [p for _, p in cq_pairs]
+
+    invest_points: list = []
+    seen_pts: set = set()
+
+    # 1순위: 실적·전망 키워드 포함 리포트 제목 (상향/하향 허용)
+    for rpt in cq_reports:
+        title = rpt['title'].strip()
+        if (title and title not in seen_pts and len(title) >= 6
+                and PERF_KW.search(title) and not TITLE_BOILER.search(title)
+                and not _is_prev_q_only(title)):
+            seen_pts.add(title)
+            invest_points.append(title)
+        if len(invest_points) >= 4:
+            break
+
+    # 2순위: previewContent 완성 문장
+    for full_prev in cq_previews:
+        if len(invest_points) >= 4:
+            break
+        for raw in _SENT_SP.split(full_prev):
+            sent     = _clean_sent(raw)
+            complete = _trim_to_complete(sent)
+            if (complete and complete not in seen_pts
+                    and PERF_KW.search(complete)
+                    and not SENT_BOILER.search(complete)
+                    and not _is_prev_q_only(complete)):
+                seen_pts.add(complete)
+                invest_points.append(complete[:130])
+                break
+
+    # 3순위: 리포트 본문 스크래핑 → 완성 실적·전망 문장 (현재 분기 상위 3건 병렬)
+    if len(invest_points) < 4:
+        scrape_ids = [rpt['id'] for rpt in cq_reports[:3]]
+        with ThreadPoolExecutor(max_workers=3) as scr_ex:
+            scraped_texts = list(scr_ex.map(_scrape_report_para, scrape_ids))
+        for s_text in scraped_texts:
+            if len(invest_points) >= 4 or not s_text:
+                break
+            for raw in _SENT_SP.split(s_text):
+                sent     = _clean_sent(raw)
+                complete = _trim_to_complete(sent)
+                if (complete and complete not in seen_pts
+                        and PERF_KW.search(complete)
+                        and not SENT_BOILER.search(complete)
+                        and not _is_prev_q_only(complete)):
+                    seen_pts.add(complete)
+                    invest_points.append(complete[:130])
+                    break
+
+    # 현재 분기 내용이 없으면 표시 안 함 (4순위 일반 보완 없음)
+
+    result = {'reports': reports, 'consensus': consensus, 'invest_points': invest_points[:4]}
+    _naver_reports_cache[_cache_key] = result
+    return result
+
+
 def _dart_biz_summary(corp_code: str) -> dict:
     """DART 최신 사업보고서 ZIP에서 주요 사업 내용 텍스트 + 키워드 추출 (결과 캐시)."""
     if corp_code in _dart_biz_cache:
@@ -1759,6 +2352,178 @@ def _naver_news(code):
     return []
 
 
+# 제목에 반드시 있어야 하는 제품·실적 키워드 (단독 단어로 매칭)
+_STRICT_PROD = re.compile(
+    r'반도체|메모리|HBM|DRAM|NAND|파운드리|웨이퍼|NPU|GPU'
+    r'|스마트폰|갤럭시|Galaxy|폴더블|가전|디스플레이|OLED|LCD|패널'
+    r'|배터리|2차전지|소재|부품|모듈|센서'
+    r'|매출액?|영업이익|실적|순이익|마진|원가'
+    r'|수주|계약|공급량?|출하|양산|신제품|신기술'
+    r'|공장|증설|팹|클러스터|설비투자'
+    r'|시장점유율|업황|수요|공급망|가이던스|전망치'
+    r'|인수합병|특허|MOU|협약'
+)
+# 주가·지수 움직임 중심 패턴 — 제목에 있으면 제외
+# 급락/급등은 단독 시 상품 수요 맥락도 있으므로 '주가/지수+급락/급등' 조합만 제외
+_PRICE_MOVE = re.compile(
+    r'코스피|코스닥|증시|지수|서킷브레이커'
+    r'|외국인\s*(?:순매수|순매도|매수|매도)'
+    r'|기관\s*(?:순매수|순매도|매수|매도)'
+    r'|개인\s*(?:순매수|순매도|매수|매도)'
+    r'|매물|변동성|쏠림|하락세|상승세|낙폭'
+    r'|주가[^\d가-힣]'                               # 주가 뒤 숫자/한글 아닌 경우
+    r'|(?:주가|지수)\s*(?:급락|급등|폭락|폭등)'      # 주가/지수+급락/급등 조합
+)
+
+_naver_issue_cache: dict = {}
+
+
+def _scrape_article_first_para(oid: str, aid: str) -> str:
+    """네이버 기사 첫 두 완성 문장 추출 (스크래핑)."""
+    try:
+        url = f'https://n.news.naver.com/article/{oid}/{aid}'
+        r = requests.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': 'https://news.naver.com/',
+        }, timeout=6)
+        if r.status_code != 200:
+            return ''
+        body = r.text
+        # 기사 본문 추출 (여러 셀렉터 시도)
+        raw = ''
+        for pat in [
+            r'<article[^>]+id="newsct_article"[^>]*>(.*?)</article>',
+            r'<div[^>]+id="newsct_article"[^>]*>(.*?)</div>',
+            r'<div[^>]+class="newsct_article[^"]*"[^>]*>(.*?)</div>',
+            r'<div[^>]+id="articeBody"[^>]*>(.*?)</div>',
+        ]:
+            m = re.search(pat, body, re.DOTALL)
+            if m:
+                raw = m.group(1)
+                break
+        if not raw:
+            return ''
+        # 태그·스크립트 제거
+        raw = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL)
+        raw = re.sub(r'<style[^>]*>.*?</style>',  '', raw, flags=re.DOTALL)
+        text = re.sub(r'<[^>]+>', ' ', raw)
+        text = re.sub(r'\s+', ' ', text).strip()
+        # 완성 문장 2개 추출 ('다'/'요' + 공백/끝 패턴)
+        sents = re.split(r'(?<=[다요])\s+', text)
+        parts = [s.strip() for s in sents if len(s.strip()) >= 20][:2]
+        return ' '.join(parts)[:200] if parts else ''
+    except Exception:
+        return ''
+
+
+def _trim_complete_sent(text: str, max_len: int = 160) -> str:
+    """마지막 완성 문장 어미까지 잘라 반환. 완성 불가능하면 원문 그대로."""
+    t = (text or '').strip()[:max_len]
+    if not t:
+        return ''
+    if re.search(r'[가-힣]\s*$', t):
+        return t
+    pos_list = [m.end() for m in re.finditer(r'[다요]\s*(?=[^가-힣]|$)', t)]
+    if pos_list:
+        trimmed = t[:pos_list[-1]].rstrip('.,! ')
+        if len(trimmed) >= 15:
+            return trimmed
+    # 마지막 한글 위치까지
+    last_ko = None
+    for last_ko in re.finditer(r'[가-힣]', t):
+        pass
+    if last_ko and last_ko.end() >= 15:
+        return t[:last_ko.end()].strip()
+    return t
+
+
+def _naver_issue_news(code: str, stock_name: str = '') -> list:
+    """주요 이슈 뉴스 — 종목 제품·매출·실적 관련 최근 5건 (완성 문장 요약)."""
+    cache_key = f"{code}:{stock_name}"
+    if cache_key in _naver_issue_cache:
+        return _naver_issue_cache[cache_key]
+
+    # 종목명 매칭: 전체 이름 + 영문 제거 한글명 (3자 이상만)
+    # 2자리 약칭 제외 — '삼성'이 삼성SDI·삼성물산 등과 혼용되는 문제 방지
+    _ko_only = re.sub(r'[^가-힣]+', '', stock_name)  # 한글만
+    _name_set: list[str] = []
+    if stock_name:
+        _name_set.append(stock_name)
+    if _ko_only and _ko_only not in _name_set and len(_ko_only) >= 3:
+        _name_set.append(_ko_only)           # 'SK하이닉스' → '하이닉스'
+
+    def _has_name(text: str) -> bool:
+        return any(n in text for n in _name_set)
+    try:
+        res = requests.get(
+            'https://m.stock.naver.com/api/news/list',
+            params={'stockCode': code, 'pageSize': 30, 'page': 1},
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                     'Referer': 'https://m.stock.naver.com/'},
+            timeout=8
+        )
+        if res.status_code != 200:
+            return []
+        items = res.json()
+        if not isinstance(items, list):
+            return []
+    except Exception:
+        return []
+
+    prod_news = []
+    for item in items:
+        dt       = str(item.get('dt', ''))
+        date_str = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) >= 8 else ''
+        title    = item.get('tit', '')
+        sub      = (item.get('subcontent', '') or '').strip()
+        oid      = item.get('oid', '')
+        aid      = item.get('aid', '')
+        url      = f'https://n.news.naver.com/article/{oid}/{aid}' if oid and aid else ''
+        entry = {
+            'title':  title,
+            'date':   date_str,
+            'media':  item.get('ohnm', ''),
+            'sub':    sub,           # 임시: 스크래핑 후 교체
+            'oid':    oid,
+            'aid':    aid,
+            'url':    url,
+            'summary': '',
+        }
+        # 필터: 제품·실적 키워드가 제목에 없으면 제외
+        #       주가 움직임 키워드가 제목 또는 요약 앞 50자에 있으면 제외
+        has_prod  = bool(_STRICT_PROD.search(title))
+        # 요약 앞 80자는 코스피/코스닥/증시 등 명확한 시장 용어만 체크
+        _SUB_EXCL = re.compile(r'코스피|코스닥|증시|서킷브레이커')
+        has_price = bool(_PRICE_MOVE.search(title) or _SUB_EXCL.search(sub[:80]))
+        # 종목명은 제목에 있어야 함 — subcontent에만 언급되면 주제가 다른 기사일 가능성 높음
+        name_ok = _has_name(title) if _name_set else True
+        if has_prod and not has_price and name_ok:
+            prod_news.append(entry)
+        # 그 외(제품 키워드 없거나, 주가 움직임 위주, 종목명 미언급)는 완전 제외
+
+    # 제품 뉴스가 부족하면 뒤에서 보완하지 않음 — 차라리 적게 보여줌
+    candidates = prod_news[:6]
+
+    # 상위 4건은 기사 스크래핑으로 완성 문장 요약 획득 (병렬)
+    def _enrich(entry):
+        oid, aid = entry['oid'], entry['aid']
+        scraped = _scrape_article_first_para(oid, aid) if oid and aid else ''
+        entry['summary'] = scraped if scraped else _trim_complete_sent(entry['sub'])
+        del entry['sub'], entry['oid'], entry['aid']
+        return entry
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        enriched = list(ex.map(_enrich, candidates[:4]))
+    # 나머지는 subcontent trimming만
+    for e in candidates[4:]:
+        e['summary'] = _trim_complete_sent(e['sub'])
+        del e['sub'], e['oid'], e['aid']
+    result = (enriched + candidates[4:])[:5]
+
+    _naver_issue_cache[cache_key] = result
+    return result
+
+
 @app.route('/api/dart/company-info')
 def dart_company_info():
     """DART Open API 기반 기업정보(기본정보·실적·주주·경영진) + Naver 뉴스 조회."""
@@ -1774,21 +2539,23 @@ def dart_company_info():
 
     # 기업 기본정보 + 병렬 데이터 수집
     cls_map = {'Y': '유가증권', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
-    with ThreadPoolExecutor(max_workers=7) as ex:
-        f_corp = ex.submit(_dart_req, 'company.json', {'corp_code': corp_code})
-        f_news = ex.submit(_naver_news, code)
-        f_fin  = ex.submit(_dart_financials_multi, corp_code)
-        f_shr  = ex.submit(_dart_shareholders_latest, corp_code)
-        f_exec = ex.submit(_dart_executives_latest, corp_code)
-        f_biz  = ex.submit(_dart_biz_summary, corp_code)
-        f_fng  = ex.submit(_fnguide_data, code)
-        corp_d       = f_corp.result() or {}
-        news         = f_news.result()
-        financials   = f_fin.result()
-        shareholders = f_shr.result()
-        executives   = f_exec.result()
-        biz_summary  = f_biz.result()
-        fnguide      = f_fng.result()
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        f_corp    = ex.submit(_dart_req, 'company.json', {'corp_code': corp_code})
+        f_news    = ex.submit(_naver_news, code)
+        f_fin     = ex.submit(_dart_financials_multi, corp_code)
+        f_shr     = ex.submit(_dart_shareholders_latest, corp_code)
+        f_exec    = ex.submit(_dart_executives_latest, corp_code)
+        f_reports = ex.submit(_naver_reports, code)
+        f_issues  = ex.submit(_naver_issue_news, code, stock_name)
+        f_fng     = ex.submit(_fnguide_data, code)
+        corp_d         = f_corp.result() or {}
+        news           = f_news.result()
+        financials     = f_fin.result()
+        shareholders   = f_shr.result()
+        executives     = f_exec.result()
+        invest_summary = f_reports.result()
+        issues         = f_issues.result()
+        fnguide        = f_fng.result()
 
     # ── Financial Highlight 폴백 처리 ─────────────────────────────────────
     # 우선순위: ① FnGuide 분기 → ② FnGuide 연간 → ③ DART 공시 (분기→반기→연간)
@@ -1850,7 +2617,7 @@ def dart_company_info():
         'financials':   financials,
         'shareholders': shareholders,
         'executives':   executives,
-        'biz_summary':  biz_summary,
+        'invest_summary': {**invest_summary, 'issues': issues},
         'fnguide':      fnguide,
     })
 

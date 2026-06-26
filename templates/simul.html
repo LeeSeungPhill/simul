@@ -321,6 +321,43 @@
     .badge-mid     { background: #e8fde8; color: #1a8b2a; }
     .badge-small   { background: #fdf3e8; color: #8b4a1a; }
     .badge-industry{ background: #f0f2f5; color: #555; }
+
+    /* ── 수급/차트 점수 뱃지 ── */
+    .score-badge {
+      display: inline-flex; align-items: center;
+      font-size: .72rem; font-weight: 700;
+      padding: 2px 9px; border-radius: 12px;
+      cursor: pointer; user-select: none;
+      transition: opacity .15s;
+    }
+    .score-badge:hover { opacity: .8; }
+    .score-strong { background: #2563eb; color: #fff; }
+    .score-good   { background: #16a34a; color: #fff; }
+    .score-mid    { background: #d97706; color: #fff; }
+    .score-weak   { background: #dc2626; color: #fff; }
+    .score-none   { background: #9ca3af; color: #fff; }
+    .score-detail-box {
+      margin-top: 6px; background: #f8fafc;
+      border: 1px solid #e2e8f0; border-radius: 8px;
+      padding: 10px 14px; font-size: .78rem;
+    }
+    .score-detail-title {
+      font-weight: 700; color: #374151; margin-bottom: 6px;
+    }
+    .score-detail-tbl { width: 100%; border-collapse: collapse; }
+    .score-detail-tbl td { padding: 3px 8px; color: #555; }
+    .score-detail-tbl tr:nth-child(even) td { background: #f1f5f9; }
+    .score-detail-tbl td:last-child { text-align: right; font-weight: 600; color: #2563eb; }
+
+    /* ── 종목 info 칩 ── */
+    .info-chip {
+      display: inline-flex; align-items: center; gap: 2px;
+      font-size: .70rem; padding: 2px 7px; border-radius: 10px;
+      background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;
+      white-space: nowrap;
+    }
+    .info-chip b { color: #1e3a5f; font-weight: 700; }
+
     .amt-suggest {
       font-size: .82rem;
       color: #444;
@@ -626,8 +663,87 @@
           placeholder="코드(005930) 또는 종목명"
           :class="{loading: nameLookingUp}"
         />
-        <div v-if="form.name" style="font-size:.78rem;color:#4361ee;margin-top:4px;padding-left:2px">
-          {{ form.name }}
+        <div v-if="form.name" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;padding-left:2px">
+          <span style="font-size:.78rem;color:#4361ee">{{ form.name }}</span>
+          <span v-if="stockScoresLoading" style="font-size:.7rem;color:#aaa">점수 계산 중...</span>
+          <template v-if="stockScores && !stockScoresLoading">
+            <span class="score-badge" :class="scoreCls(stockScores.supply?.score)"
+                  @click="scoreDetailOpen = scoreDetailOpen === 'supply' ? '' : 'supply'">
+              수급 {{ stockScores.supply?.score ?? '-' }}
+            </span>
+            <span class="score-badge" :class="scoreCls(stockScores.chart?.score)"
+                  @click="scoreDetailOpen = scoreDetailOpen === 'chart' ? '' : 'chart'">
+              차트 {{ stockScores.chart?.score ?? '-' }}
+            </span>
+            <template v-if="stockScores.info">
+              <span v-if="stockScores.info.pbr != null" class="info-chip">PBR <b>{{ stockScores.info.pbr }}배</b></span>
+              <span v-if="stockScores.info.per != null" class="info-chip">PER <b>{{ stockScores.info.per }}배</b></span>
+              <span v-if="stockScores.info.roe != null" class="info-chip">ROE <b>{{ stockScores.info.roe }}%</b></span>
+              <span v-if="stockScores.info.ssts != null" class="info-chip">공매도 <b>{{ stockScores.info.ssts }}%</b></span>
+            </template>
+          </template>
+        </div>
+        <!-- 수급점수 상세 -->
+        <div v-if="stockScores && scoreDetailOpen === 'supply'" class="score-detail-box">
+          <div class="score-detail-title">수급점수 상세 ({{ stockScores.supply?.score }}점 / 100점)</div>
+          <table class="score-detail-tbl">
+            <tr>
+              <td>외국인 5일 순매수</td>
+              <td>{{ stockScores.supply?.detail?.frgn_5d_eok }}억원</td>
+              <td>{{ stockScores.supply?.detail?.frgn_score }}점</td>
+            </tr>
+            <tr>
+              <td>기관 5일 순매수</td>
+              <td>{{ stockScores.supply?.detail?.orgn_5d_eok }}억원</td>
+              <td>{{ stockScores.supply?.detail?.orgn_score }}점</td>
+            </tr>
+            <tr>
+              <td>공매도 5일 평균</td>
+              <td>{{ stockScores.supply?.detail?.ssts_5d_avg }}%</td>
+              <td>{{ stockScores.supply?.detail?.ssts_score }}점</td>
+            </tr>
+            <tr>
+              <td>대차잔고비율</td>
+              <td>{{ stockScores.supply?.detail?.loan_rate }}%</td>
+              <td>{{ stockScores.supply?.detail?.loan_score }}점</td>
+            </tr>
+            <tr>
+              <td>OBV 5일 변화율</td>
+              <td>{{ stockScores.supply?.detail?.obv_chg_pct }}%</td>
+              <td>{{ stockScores.supply?.detail?.obv_score }}점</td>
+            </tr>
+          </table>
+        </div>
+        <!-- 차트점수 상세 -->
+        <div v-if="stockScores && scoreDetailOpen === 'chart'" class="score-detail-box">
+          <div class="score-detail-title">차트점수 상세 ({{ stockScores.chart?.score }}점 / 100점)</div>
+          <table class="score-detail-tbl">
+            <tr>
+              <td>추세강도 (MA 정배열)</td>
+              <td>MA5 {{ fmt(stockScores.chart?.detail?.ma5) }} / MA20 {{ fmt(stockScores.chart?.detail?.ma20) }} / MA60 {{ fmt(stockScores.chart?.detail?.ma60) }}</td>
+              <td>{{ stockScores.chart?.detail?.trend_score }}점</td>
+            </tr>
+            <tr>
+              <td>ADX (+DI / -DI)</td>
+              <td>{{ stockScores.chart?.detail?.adx }} ({{ stockScores.chart?.detail?.plus_di }} / {{ stockScores.chart?.detail?.minus_di }})</td>
+              <td>{{ stockScores.chart?.detail?.adx_score }}점</td>
+            </tr>
+            <tr>
+              <td>이격도 (MA20 대비)</td>
+              <td>{{ stockScores.chart?.detail?.deviation }}%</td>
+              <td>{{ stockScores.chart?.detail?.deviation_score }}점</td>
+            </tr>
+            <tr>
+              <td>거래량비율 (5일/20일)</td>
+              <td>{{ stockScores.chart?.detail?.vol_ratio_5_20 }}%</td>
+              <td>{{ stockScores.chart?.detail?.vol_score }}점</td>
+            </tr>
+            <tr>
+              <td>전일대비거래량</td>
+              <td>{{ stockScores.chart?.detail?.vod_ratio }}%</td>
+              <td>{{ stockScores.chart?.detail?.vod_score }}점</td>
+            </tr>
+          </table>
         </div>
       </div>
 
@@ -801,7 +917,8 @@
         <div class="dart-summary-box" style="grid-column:1/-1">
           <div class="dart-summary-title" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
             <span>기업정보</span>
-            <span v-if="companyInfo.biz_summary && companyInfo.biz_summary.period" class="dart-period" style="margin:0">{{ companyInfo.biz_summary.period }}</span>
+            <span v-if="companyInfo.invest_summary && companyInfo.invest_summary.reports && companyInfo.invest_summary.reports.length"
+                  class="dart-period" style="margin:0">리포트 {{ companyInfo.invest_summary.reports.length }}건</span>
           </div>
           <!-- 컨센서스 -->
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.consensus">
@@ -822,23 +939,51 @@
             <span v-if="companyInfo.est_dt" style="color:#aaa">설립 {{ companyInfo.est_dt }}</span>
             <a v-if="companyInfo.hm_url" :href="'http://'+companyInfo.hm_url.replace(/^https?:\/\//,'')" target="_blank" style="color:#1a73e8">🔗 홈페이지</a>
           </div>
-          <!-- 사업의 개요 (더보기/접기) -->
-          <template v-if="companyInfo.biz_summary && companyInfo.biz_summary.text">
-            <div style="border-top:1px solid #e8eaff;padding-top:7px">
-              <div style="font-size:.75rem;line-height:1.7;color:#444;white-space:pre-line;word-break:keep-all"
-                   :style="bizExpanded
-                     ? {}
-                     : {maxHeight:'72px', overflow:'hidden',
-                        maskImage:'linear-gradient(to bottom,#000 40%,transparent 100%)',
-                        WebkitMaskImage:'linear-gradient(to bottom,#000 40%,transparent 100%)'}">
-                {{ companyInfo.biz_summary.text }}
+          <!-- 주요 이슈 뉴스 (투자포인트 위에 배치) -->
+          <template v-if="companyInfo.invest_summary && companyInfo.invest_summary.issues && companyInfo.invest_summary.issues.length">
+            <div style="border-top:1px solid #e8eaff;padding-top:7px;margin-bottom:8px">
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">주요 이슈</div>
+              <div v-for="iss in companyInfo.invest_summary.issues" :key="iss.url"
+                   style="padding:5px 0;border-bottom:1px solid #f0f2ff">
+                <div style="display:flex;align-items:center;gap:6px;font-size:.74rem">
+                  <span style="color:#999;flex:none;min-width:65px">{{ iss.date }}</span>
+                  <span style="color:#888;flex:none;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.68rem">{{ iss.media }}</span>
+                  <a v-if="iss.url" :href="iss.url" target="_blank"
+                     style="color:#222;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">{{ iss.title }}</a>
+                  <span v-else style="color:#222;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ iss.title }}</span>
+                </div>
+                <div v-if="iss.summary" style="font-size:.72rem;color:#666;margin-top:2px;line-height:1.5;
+                            overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical">
+                  {{ iss.summary }}
+                </div>
               </div>
-              <button v-if="companyInfo.biz_summary.text.length > 120"
-                      @click="bizExpanded=!bizExpanded"
-                      style="margin-top:4px;background:none;border:none;color:#4361ee;
-                             font-size:.73rem;cursor:pointer;padding:0;font-weight:600">
-                {{ bizExpanded ? '▲ 접기' : '▼ 더보기' }}
-              </button>
+            </div>
+          </template>
+          <!-- 투자포인트 (네이버 리포트 기반) -->
+          <template v-if="companyInfo.invest_summary && companyInfo.invest_summary.invest_points && companyInfo.invest_summary.invest_points.length">
+            <div style="border-top:1px solid #e8eaff;padding-top:7px;margin-bottom:8px">
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">투자포인트</div>
+              <ul style="margin:0;padding-left:16px;font-size:.75rem;color:#444;line-height:1.7">
+                <li v-for="pt in companyInfo.invest_summary.invest_points" :key="pt">{{ pt }}</li>
+              </ul>
+            </div>
+          </template>
+          <!-- 최근 리포트 목록 -->
+          <template v-if="companyInfo.invest_summary && companyInfo.invest_summary.reports && companyInfo.invest_summary.reports.length">
+            <div style="border-top:1px solid #e8eaff;padding-top:7px">
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">최근 리포트</div>
+              <div v-for="rpt in companyInfo.invest_summary.reports.slice(0,5)" :key="rpt.id"
+                   style="display:flex;align-items:center;gap:6px;font-size:.74rem;padding:3px 0;border-bottom:1px solid #f0f2ff">
+                <span style="color:#999;flex:none;min-width:65px">{{ rpt.date }}</span>
+                <span style="color:#555;flex:none;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ rpt.firm }}</span>
+                <a :href="rpt.url" target="_blank" style="color:#333;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ rpt.title }}</a>
+                <span v-if="rpt.opinion" style="flex:none;padding:1px 5px;border-radius:3px;font-size:.68rem;font-weight:600"
+                      :style="['매수','강력매수','비중확대','적극매수'].includes(rpt.opinion)
+                        ? {background:'#fde8e8',color:'#c00'}
+                        : rpt.opinion==='매도' ? {background:'#e8f0fe',color:'#1967d2'}
+                        : {background:'#f5f5f5',color:'#777'}">{{ rpt.opinion }}</span>
+                <span v-if="rpt.target" style="flex:none;color:#e6600d;font-weight:600;font-size:.72rem">{{ Number(rpt.target).toLocaleString('ko-KR') }}</span>
+              </div>
             </div>
           </template>
         </div>
@@ -1429,6 +1574,31 @@ createApp({
       basic_price: '매수단가', basic_qty: '매수량', trail_tp: '추적유형', proc_min: '처리시간',
     };
 
+    const stockScores        = ref(null);
+    const stockScoresLoading = ref(false);
+    const scoreDetailOpen    = ref('');
+
+    async function fetchStockScores(code) {
+      stockScores.value        = null;
+      stockScoresLoading.value = true;
+      scoreDetailOpen.value    = '';
+      try {
+        const res  = await fetch(`/api/stock-scores?code=${code}`);
+        const data = await res.json();
+        if (!data.error) stockScores.value = data;
+      } catch { /* 무시 */ } finally {
+        stockScoresLoading.value = false;
+      }
+    }
+
+    function scoreCls(score) {
+      if (score === null || score === undefined) return 'score-none';
+      if (score >= 70) return 'score-strong';
+      if (score >= 50) return 'score-good';
+      if (score >= 30) return 'score-mid';
+      return 'score-weak';
+    }
+
     const companyInfo    = ref(null);
     const companyTab     = ref('financials');
     const companyLoading = ref(false);
@@ -1662,6 +1832,7 @@ createApp({
           if (data.name) form.value.name = data.name;
           await fetchStockInfo(code, form.value.buy_date);
           fetchCompanyInfo(code, form.value.name);
+          fetchStockScores(code);
         } else {
           const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
           const data = await res.json();
@@ -1670,6 +1841,7 @@ createApp({
             form.value.code = data.code;
             await fetchStockInfo(data.code, form.value.buy_date);
             fetchCompanyInfo(data.code, val);
+            fetchStockScores(data.code);
           }
         }
       } catch { /* 무시 */ } finally {
@@ -1953,7 +2125,10 @@ createApp({
       form.value    = { code: '', name: '', buy_price: null, loss_price: null, buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: '' };
       useLossAmt.value    = false;
       preview.value       = null;
-      stockInfo.value     = null;
+      stockInfo.value          = null;
+      stockScores.value        = null;
+      stockScoresLoading.value = false;
+      scoreDetailOpen.value    = '';
       companyInfo.value    = null;
       companyLoading.value = false;
       bizExpanded.value    = false;
@@ -1979,6 +2154,7 @@ createApp({
       simDate, running, runLog,
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
+      stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       companyInfo, companyTab, companyLoading, fetchCompanyInfo, bizExpanded,
       sellForm, sellPreview, sellLookingUp, canSellCalc,
       trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
