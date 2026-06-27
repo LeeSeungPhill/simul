@@ -1029,22 +1029,25 @@
         <div class="dart-summary-box">
           <div class="dart-summary-title">예상실적</div>
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.next_earnings">
-            <div style="font-size:.74rem;color:#555;margin-bottom:6px">
+            <div v-if="companyInfo.fnguide.next_earnings.est_op"
+                 style="font-size:.74rem;color:#555;margin-bottom:6px">
               <b style="color:#333">예상 영업이익</b>
               <span style="font-size:.8rem;font-weight:700;color:#4361ee;margin-left:4px">
                 {{ Number(companyInfo.fnguide.next_earnings.est_op.replace(/,/g,'')).toLocaleString('ko-KR') }}억
               </span>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-              <div style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
+              <div v-if="companyInfo.fnguide.next_earnings.vs_3m"
+                   style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
                 3개월전대비
-                <b :style="{color: companyInfo.fnguide.next_earnings.vs_3m&&companyInfo.fnguide.next_earnings.vs_3m.startsWith('+')?'#2dc653':'#e63946'}">
+                <b :style="{color: companyInfo.fnguide.next_earnings.vs_3m.startsWith('+')?'#2dc653':'#e63946'}">
                   {{ companyInfo.fnguide.next_earnings.vs_3m }}%
                 </b>
               </div>
-              <div style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
+              <div v-if="companyInfo.fnguide.next_earnings.vs_ly"
+                   style="font-size:.73rem;background:#f7f8ff;padding:3px 8px;border-radius:6px">
                 전년동기대비
-                <b :style="{color: companyInfo.fnguide.next_earnings.vs_ly&&companyInfo.fnguide.next_earnings.vs_ly.startsWith('+')?'#2dc653':'#e63946'}">
+                <b :style="{color: companyInfo.fnguide.next_earnings.vs_ly.startsWith('+')?'#2dc653':'#e63946'}">
                   {{ companyInfo.fnguide.next_earnings.vs_ly }}%
                 </b>
               </div>

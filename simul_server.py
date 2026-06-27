@@ -1335,6 +1335,10 @@ def api_active_stocks():
         return jsonify({'error': str(e)}), 500
 
 
+# ── 네이버 검색 Open API (developers.naver.com 에서 발급) ─────────────────
+NAVER_CLIENT_ID     = 'erADnKdeL7tt0dMK5K7N'   # Application Client ID
+NAVER_CLIENT_SECRET = 'LvdYnYi6Yc'   # Application Client Secret
+
 # ── DART Open API ──────────────────────────────────────────────────────────
 DART_API_KEY  = 'a86677be2f044d30757379f277024be9b0989823'
 DART_BASE     = 'https://opendart.fss.or.kr/api'
@@ -1950,12 +1954,24 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
     invest_points: list = []
     seen_pts: set = set()
 
+    def _near_dup_pt(text: str) -> bool:
+        """첫 20자 또는 15자 포함 관계로 기존 항목과 유사 여부 확인."""
+        pre20 = text[:20]
+        pre15 = text[:15]
+        for s in seen_pts:
+            if pre20 == s[:20]:
+                return True
+            if len(pre15) >= 15 and (pre15 in s or s[:15] in text):
+                return True
+        return False
+
     # 1순위: 실적·전망 키워드 포함 리포트 제목 (상향/하향 허용)
     for rpt in cq_reports:
         title = rpt['title'].strip()
-        if (title and title not in seen_pts and len(title) >= 6
+        if (title and len(title) >= 6
                 and PERF_KW.search(title) and not TITLE_BOILER.search(title)
-                and not _is_prev_q_only(title)):
+                and not _is_prev_q_only(title)
+                and not _near_dup_pt(title)):
             seen_pts.add(title)
             invest_points.append(title)
         if len(invest_points) >= 4:
@@ -1968,10 +1984,11 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
         for raw in _SENT_SP.split(full_prev):
             sent     = _clean_sent(raw)
             complete = _trim_to_complete(sent)
-            if (complete and complete not in seen_pts
+            if (complete
                     and PERF_KW.search(complete)
                     and not SENT_BOILER.search(complete)
-                    and not _is_prev_q_only(complete)):
+                    and not _is_prev_q_only(complete)
+                    and not _near_dup_pt(complete)):
                 seen_pts.add(complete)
                 invest_points.append(complete[:130])
                 break
@@ -1987,10 +2004,11 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
             for raw in _SENT_SP.split(s_text):
                 sent     = _clean_sent(raw)
                 complete = _trim_to_complete(sent)
-                if (complete and complete not in seen_pts
+                if (complete
                         and PERF_KW.search(complete)
                         and not SENT_BOILER.search(complete)
-                        and not _is_prev_q_only(complete)):
+                        and not _is_prev_q_only(complete)
+                        and not _near_dup_pt(complete)):
                     seen_pts.add(complete)
                     invest_points.append(complete[:130])
                     break
@@ -2154,8 +2172,21 @@ def _fnguide_data(code: str) -> dict:
         html = mr.text
 
         def _tds(b):
+            import html as _html_esc
             tds = _re2.findall(r'<td[^>]*>(.*?)</td>', b, _re2.DOTALL)
-            return [_re2.sub(r'<[^>]+>', '', td).strip() for td in tds]
+            cleaned = []
+            for td in tds:
+                t = _re2.sub(r'<[^>]+>', '', td)   # HTML 태그 제거
+                t = _html_esc.unescape(t)            # &nbsp; → ' ' 등 엔티티 복원
+                t = _re2.sub(r'\s+', ' ', t).strip()
+                cleaned.append(t)
+            return cleaned
+
+        def _valid_val(v: str):
+            """'-' 또는 빈 값이면 None, 유효하면 그대로 반환."""
+            if not v or v in ('-', '–', '—', 'N/A', 'n/a'):
+                return None
+            return v
 
         # ① 컨센서스 / 목표주가
         pos9 = html.find('id="svdMainGrid9"')
@@ -2183,8 +2214,10 @@ def _fnguide_data(code: str) -> dict:
             vals = _tds(html[pos2: pos2 + 800])
             if len(vals) >= 4:
                 result['next_earnings'] = {
-                    'date': vals[0], 'est_op': vals[1],
-                    'vs_3m': vals[2], 'vs_ly': vals[3],
+                    'date':   _valid_val(vals[0]),
+                    'est_op': _valid_val(vals[1]),
+                    'vs_3m':  _valid_val(vals[2]),
+                    'vs_ly':  _valid_val(vals[3]),
                 }
 
         # ③ Financial Highlight (연결, 분기 4개)
@@ -2378,42 +2411,6 @@ _PRICE_MOVE = re.compile(
 _naver_issue_cache: dict = {}
 
 
-def _scrape_article_first_para(oid: str, aid: str) -> str:
-    """네이버 기사 첫 두 완성 문장 추출 (스크래핑)."""
-    try:
-        url = f'https://n.news.naver.com/article/{oid}/{aid}'
-        r = requests.get(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': 'https://news.naver.com/',
-        }, timeout=6)
-        if r.status_code != 200:
-            return ''
-        body = r.text
-        # 기사 본문 추출 (여러 셀렉터 시도)
-        raw = ''
-        for pat in [
-            r'<article[^>]+id="newsct_article"[^>]*>(.*?)</article>',
-            r'<div[^>]+id="newsct_article"[^>]*>(.*?)</div>',
-            r'<div[^>]+class="newsct_article[^"]*"[^>]*>(.*?)</div>',
-            r'<div[^>]+id="articeBody"[^>]*>(.*?)</div>',
-        ]:
-            m = re.search(pat, body, re.DOTALL)
-            if m:
-                raw = m.group(1)
-                break
-        if not raw:
-            return ''
-        # 태그·스크립트 제거
-        raw = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL)
-        raw = re.sub(r'<style[^>]*>.*?</style>',  '', raw, flags=re.DOTALL)
-        text = re.sub(r'<[^>]+>', ' ', raw)
-        text = re.sub(r'\s+', ' ', text).strip()
-        # 완성 문장 2개 추출 ('다'/'요' + 공백/끝 패턴)
-        sents = re.split(r'(?<=[다요])\s+', text)
-        parts = [s.strip() for s in sents if len(s.strip()) >= 20][:2]
-        return ' '.join(parts)[:200] if parts else ''
-    except Exception:
-        return ''
 
 
 def _trim_complete_sent(text: str, max_len: int = 160) -> str:
@@ -2438,88 +2435,103 @@ def _trim_complete_sent(text: str, max_len: int = 160) -> str:
 
 
 def _naver_issue_news(code: str, stock_name: str = '') -> list:
-    """주요 이슈 뉴스 — 종목 제품·매출·실적 관련 최근 5건 (완성 문장 요약)."""
+    """네이버 검색 Open API — 종목명으로 최근 뉴스 수집 (제품·실적 관련 5건)."""
+    import html as _html
+    from email.utils import parsedate_to_datetime
+
     cache_key = f"{code}:{stock_name}"
     if cache_key in _naver_issue_cache:
         return _naver_issue_cache[cache_key]
 
-    # 종목명 매칭: 전체 이름 + 영문 제거 한글명 (3자 이상만)
-    # 2자리 약칭 제외 — '삼성'이 삼성SDI·삼성물산 등과 혼용되는 문제 방지
-    _ko_only = re.sub(r'[^가-힣]+', '', stock_name)  # 한글만
-    _name_set: list[str] = []
-    if stock_name:
-        _name_set.append(stock_name)
-    if _ko_only and _ko_only not in _name_set and len(_ko_only) >= 3:
-        _name_set.append(_ko_only)           # 'SK하이닉스' → '하이닉스'
+    if not stock_name:
+        return []
 
-    def _has_name(text: str) -> bool:
-        return any(n in text for n in _name_set)
+    # ── Naver 언론사 OID → 이름 (주요 경제·IT 매체) ──────────────────────
+    _OID_MEDIA = {
+        '001': '연합뉴스',  '003': '뉴시스',    '008': '머니투데이',
+        '009': '매일경제',  '011': '서울신문',   '013': '헤럴드경제',
+        '014': '파이낸셜뉴스', '015': '한국경제', '018': '이데일리',
+        '020': '동아일보',  '022': '세계일보',   '023': '조선일보',
+        '025': '중앙일보',  '028': '한겨레',     '030': '전자신문',
+        '032': '경향신문',  '040': 'YTN',        '047': 'SBS',
+        '057': 'MBC',       '060': 'KBS',        '066': '서울경제',
+        '077': '중앙일보',  '082': '한경비즈니스','092': '한국경제',
+        '101': '뉴스1',     '138': '한국경제',   '144': '조선비즈',
+        '215': '이코노믹리뷰', '277': '아시아경제', '297': '비즈니스포스트',
+        '421': '뉴데일리',  '449': 'MBN',
+    }
+
+    # 종목명 → 제목 매칭용 패턴 (전체 이름 + 한글만 추출한 부분)
+    _ko_only = re.sub(r'[^가-힣]', '', stock_name)
+    _name_variants = [stock_name]
+    if len(_ko_only) >= 3 and _ko_only != stock_name:
+        _name_variants.append(_ko_only)
+    _name_pat = re.compile('|'.join(re.escape(n) for n in _name_variants))
+
     try:
         res = requests.get(
-            'https://m.stock.naver.com/api/news/list',
-            params={'stockCode': code, 'pageSize': 30, 'page': 1},
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                     'Referer': 'https://m.stock.naver.com/'},
-            timeout=8
+            'https://openapi.naver.com/v1/search/news.json',
+            params={'query': stock_name, 'display': 100, 'start': 1, 'sort': 'date'},
+            headers={
+                'X-Naver-Client-Id':     NAVER_CLIENT_ID,
+                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                'User-Agent': 'Mozilla/5.0',
+            },
+            timeout=8,
         )
         if res.status_code != 200:
-            return []
-        items = res.json()
-        if not isinstance(items, list):
-            return []
+            return []   # 오류는 캐시하지 않음 — 재시도 가능하도록
+        items = res.json().get('items', [])
     except Exception:
         return []
 
-    prod_news = []
+    _SUB_EXCL  = re.compile(r'코스피|코스닥|증시|서킷브레이커')
+    seen_prefix: set  = set()
+    prod_news:   list = []
+
     for item in items:
-        dt       = str(item.get('dt', ''))
-        date_str = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) >= 8 else ''
-        title    = item.get('tit', '')
-        sub      = (item.get('subcontent', '') or '').strip()
-        oid      = item.get('oid', '')
-        aid      = item.get('aid', '')
-        url      = f'https://n.news.naver.com/article/{oid}/{aid}' if oid and aid else ''
-        entry = {
-            'title':  title,
-            'date':   date_str,
-            'media':  item.get('ohnm', ''),
-            'sub':    sub,           # 임시: 스크래핑 후 교체
-            'oid':    oid,
-            'aid':    aid,
-            'url':    url,
-            'summary': '',
-        }
-        # 필터: 제품·실적 키워드가 제목에 없으면 제외
-        #       주가 움직임 키워드가 제목 또는 요약 앞 50자에 있으면 제외
-        has_prod  = bool(_STRICT_PROD.search(title))
-        # 요약 앞 80자는 코스피/코스닥/증시 등 명확한 시장 용어만 체크
-        _SUB_EXCL = re.compile(r'코스피|코스닥|증시|서킷브레이커')
-        has_price = bool(_PRICE_MOVE.search(title) or _SUB_EXCL.search(sub[:80]))
-        # 종목명은 제목에 있어야 함 — subcontent에만 언급되면 주제가 다른 기사일 가능성 높음
-        name_ok = _has_name(title) if _name_set else True
-        if has_prod and not has_price and name_ok:
-            prod_news.append(entry)
-        # 그 외(제품 키워드 없거나, 주가 움직임 위주, 종목명 미언급)는 완전 제외
+        title = _html.unescape(re.sub(r'<[^>]+>', '', item.get('title', '')))
+        desc  = _html.unescape(re.sub(r'<[^>]+>', '', item.get('description', '') or ''))
+        link  = item.get('link', '') or item.get('originallink', '')
 
-    # 제품 뉴스가 부족하면 뒤에서 보완하지 않음 — 차라리 적게 보여줌
-    candidates = prod_news[:6]
+        if not title:
+            continue
 
-    # 상위 4건은 기사 스크래핑으로 완성 문장 요약 획득 (병렬)
-    def _enrich(entry):
-        oid, aid = entry['oid'], entry['aid']
-        scraped = _scrape_article_first_para(oid, aid) if oid and aid else ''
-        entry['summary'] = scraped if scraped else _trim_complete_sent(entry['sub'])
-        del entry['sub'], entry['oid'], entry['aid']
-        return entry
+        # 날짜 파싱 (RFC 2822 → YYYY-MM-DD)
+        try:
+            date_str = parsedate_to_datetime(item.get('pubDate', '')).strftime('%Y-%m-%d')
+        except Exception:
+            date_str = ''
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        enriched = list(ex.map(_enrich, candidates[:4]))
-    # 나머지는 subcontent trimming만
-    for e in candidates[4:]:
-        e['summary'] = _trim_complete_sent(e['sub'])
-        del e['sub'], e['oid'], e['aid']
-    result = (enriched + candidates[4:])[:5]
+        # oid 추출 → 언론사명 매핑
+        m_oid = re.search(r'/article/(\d+)/', link)
+        media = _OID_MEDIA.get(m_oid.group(1), '') if m_oid else ''
 
+        # ① 종목명이 제목에 직접 언급된 경우만 통과 (설명에만 있는 관련 뉴스 제외)
+        if not _name_pat.search(title):
+            continue
+
+        # ② 제품·실적 키워드 필수 / 시장 지수 뉴스 제외
+        has_prod  = bool(_STRICT_PROD.search(title) or _STRICT_PROD.search(desc[:100]))
+        has_price = bool(_PRICE_MOVE.search(title)  or _SUB_EXCL.search(desc[:80]))
+        if not has_prod or has_price:
+            continue
+
+        # 제목 앞 20자 중복 제거
+        key = title[:20]
+        if key in seen_prefix:
+            continue
+        seen_prefix.add(key)
+
+        prod_news.append({
+            'title':   title,
+            'date':    date_str,
+            'media':   media,
+            'url':     link,
+            'summary': _trim_complete_sent(desc),   # 검색 API description 직접 사용
+        })
+
+    result = prod_news[:5]
     _naver_issue_cache[cache_key] = result
     return result
 
@@ -2619,6 +2631,70 @@ def dart_company_info():
         'executives':   executives,
         'invest_summary': {**invest_summary, 'issues': issues},
         'fnguide':      fnguide,
+    })
+
+
+@app.route('/api/debug-news-search')
+def debug_news_search():
+    """네이버 검색 Open API + _naver_issue_news 필터 결과 확인용 (임시)."""
+    import html as _html
+    name    = request.args.get('name', '삼성전자')
+    code    = request.args.get('code', '005930')
+    display = int(request.args.get('display', 20))
+
+    # ── 1. 원시 API 응답 ──────────────────────────────────────────────────
+    try:
+        res = requests.get(
+            'https://openapi.naver.com/v1/search/news.json',
+            params={'query': name, 'display': display, 'start': 1, 'sort': 'date'},
+            headers={
+                'X-Naver-Client-Id':     NAVER_CLIENT_ID,
+                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                'User-Agent': 'Mozilla/5.0',
+            },
+            timeout=8,
+        )
+        data  = res.json()
+        items = data.get('items', [])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    if res.status_code != 200:
+        return jsonify({'status': res.status_code, 'error': data}), res.status_code
+
+    _ko_dbg   = re.sub(r'[^가-힣]', '', name)
+    _vars_dbg = [name] + ([_ko_dbg] if len(_ko_dbg) >= 3 and _ko_dbg != name else [])
+    _name_dbg = re.compile('|'.join(re.escape(v) for v in _vars_dbg))
+    _SUB_EXCL = re.compile(r'코스피|코스닥|증시|서킷브레이커')
+    raw_results = []
+    for it in items:
+        title = _html.unescape(re.sub(r'<[^>]+>', '', it.get('title', '')))
+        desc  = _html.unescape(re.sub(r'<[^>]+>', '', it.get('description', '') or ''))
+        in_title  = bool(_name_dbg.search(title))
+        has_prod  = bool(_STRICT_PROD.search(title) or _STRICT_PROD.search(desc[:100]))
+        has_price = bool(_PRICE_MOVE.search(title)  or _SUB_EXCL.search(desc[:80]))
+        raw_results.append({
+            'title':     title,
+            'desc':      desc[:80],
+            'pub':       it.get('pubDate', ''),
+            'in_title':  in_title,
+            'has_prod':  has_prod,
+            'has_price': has_price,
+            'pass':      in_title and has_prod and not has_price,
+        })
+
+    # ── 2. 실제 _naver_issue_news 캐시 삭제 후 호출 ───────────────────────
+    cache_key = f"{code}:{name}"
+    _naver_issue_cache.pop(cache_key, None)   # 강제 캐시 클리어
+    issues = _naver_issue_news(code, name)
+
+    return jsonify({
+        'status':       res.status_code,
+        'total':        data.get('total', 0),
+        'raw_count':    len(items),
+        'pass_count':   sum(1 for r in raw_results if r['pass']),
+        'raw_results':  raw_results,
+        'issues_result': issues,   # 실제 함수 반환값
     })
 
 
