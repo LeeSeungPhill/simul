@@ -2350,46 +2350,8 @@ def _fnguide_data(code: str) -> dict:
     return result
 
 
-_INVEST_KW = {'실적', '영업이익', '매출', '수주', '배당', '목표주가', '전망', '투자', '계약',
-              '증익', '성장', '어닝', '흑자', '적자', '공시', '호실적', '상향', '하향',
-              '발표', '분기', '매출액', '순이익', '영업', '수익', '주가', '펀드',
-              '업황', '업계', '시장', '산업', '수요', '공급', '동향', '경기', '점유율',
-              '전망', '가이던스', '출하', '판매', '가격', '원가', '감산', '증산'}
-
-def _naver_news(code):
-    """Naver 모바일 API — 투자 관련 키워드 뉴스 우선 5건."""
-    try:
-        res = requests.get(
-            'https://m.stock.naver.com/api/news/list',
-            params={'stockCode': code, 'pageSize': 15, 'page': 1},
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                     'Referer': 'https://m.stock.naver.com/'},
-            timeout=8
-        )
-        if res.status_code == 200:
-            items = res.json()
-            if not isinstance(items, list):
-                return []
-            invest, others = [], []
-            for item in items[:15]:
-                dt = str(item.get('dt', ''))
-                date_str = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) >= 8 else ''
-                entry = {'title': item.get('tit', ''), 'date': date_str, 'media': item.get('ohnm', '')}
-                if any(kw in entry['title'] for kw in _INVEST_KW):
-                    invest.append(entry)
-                else:
-                    others.append(entry)
-            return (invest + others)[:5]
-    except Exception:
-        pass
-    return []
-
-
 # 제목에 반드시 있어야 하는 제품·실적 키워드 (단독 단어로 매칭)
 _STRICT_PROD = re.compile(
-    r'반도체|메모리|HBM|DRAM|NAND|파운드리|웨이퍼|NPU|GPU'
-    r'|스마트폰|갤럭시|Galaxy|폴더블|가전|디스플레이|OLED|LCD|패널'
-    r'|배터리|2차전지|소재|부품|모듈|센서'
     r'|매출액?|영업이익|실적|순이익|마진|원가'
     r'|수주|계약|공급량?|출하|양산|신제품|신기술'
     r'|공장|증설|팹|클러스터|설비투자'
@@ -2485,6 +2447,19 @@ def _naver_issue_news(code: str, stock_name: str = '') -> list:
     except Exception:
         return []
 
+    # ── 종목 주요사업 키워드로 _STRICT_PROD 보강 ─────────────────────────
+    # fnguide 캐시에서 읽기 (메인 API 병렬 호출이 이미 채웠을 가능성 높음)
+    _fng = _fnguide_data(code)
+    _biz_kws  = _fng.get('keywords', [])
+    _prod_kws = [p['name'] for p in _fng.get('products', []) if p.get('name')]
+    _extra    = list({k for k in _biz_kws + _prod_kws if len(k) >= 2})
+    if _extra:
+        _prod_pat = re.compile(
+            _STRICT_PROD.pattern + '|' + '|'.join(re.escape(k) for k in _extra)
+        )
+    else:
+        _prod_pat = _STRICT_PROD
+
     _SUB_EXCL  = re.compile(r'코스피|코스닥|증시|서킷브레이커')
     seen_prefix: set  = set()
     prod_news:   list = []
@@ -2512,7 +2487,7 @@ def _naver_issue_news(code: str, stock_name: str = '') -> list:
             continue
 
         # ② 제품·실적 키워드 필수 / 시장 지수 뉴스 제외
-        has_prod  = bool(_STRICT_PROD.search(title) or _STRICT_PROD.search(desc[:100]))
+        has_prod  = bool(_prod_pat.search(title) or _prod_pat.search(desc[:100]))
         has_price = bool(_PRICE_MOVE.search(title)  or _SUB_EXCL.search(desc[:80]))
         if not has_prod or has_price:
             continue
@@ -2553,7 +2528,6 @@ def dart_company_info():
     cls_map = {'Y': '유가증권', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
     with ThreadPoolExecutor(max_workers=8) as ex:
         f_corp    = ex.submit(_dart_req, 'company.json', {'corp_code': corp_code})
-        f_news    = ex.submit(_naver_news, code)
         f_fin     = ex.submit(_dart_financials_multi, corp_code)
         f_shr     = ex.submit(_dart_shareholders_latest, corp_code)
         f_exec    = ex.submit(_dart_executives_latest, corp_code)
@@ -2561,7 +2535,6 @@ def dart_company_info():
         f_issues  = ex.submit(_naver_issue_news, code, stock_name)
         f_fng     = ex.submit(_fnguide_data, code)
         corp_d         = f_corp.result() or {}
-        news           = f_news.result()
         financials     = f_fin.result()
         shareholders   = f_shr.result()
         executives     = f_exec.result()
@@ -2625,76 +2598,11 @@ def dart_company_info():
         'acc_mt':       corp_d.get('acc_mt', ''),
         'phn_no':       corp_d.get('phn_no', ''),
         'ceo_nm':       corp_d.get('ceo_nm', ''),
-        'news':         news,
         'financials':   financials,
         'shareholders': shareholders,
         'executives':   executives,
         'invest_summary': {**invest_summary, 'issues': issues},
         'fnguide':      fnguide,
-    })
-
-
-@app.route('/api/debug-news-search')
-def debug_news_search():
-    """네이버 검색 Open API + _naver_issue_news 필터 결과 확인용 (임시)."""
-    import html as _html
-    name    = request.args.get('name', '삼성전자')
-    code    = request.args.get('code', '005930')
-    display = int(request.args.get('display', 20))
-
-    # ── 1. 원시 API 응답 ──────────────────────────────────────────────────
-    try:
-        res = requests.get(
-            'https://openapi.naver.com/v1/search/news.json',
-            params={'query': name, 'display': display, 'start': 1, 'sort': 'date'},
-            headers={
-                'X-Naver-Client-Id':     NAVER_CLIENT_ID,
-                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
-                'User-Agent': 'Mozilla/5.0',
-            },
-            timeout=8,
-        )
-        data  = res.json()
-        items = data.get('items', [])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-    if res.status_code != 200:
-        return jsonify({'status': res.status_code, 'error': data}), res.status_code
-
-    _ko_dbg   = re.sub(r'[^가-힣]', '', name)
-    _vars_dbg = [name] + ([_ko_dbg] if len(_ko_dbg) >= 3 and _ko_dbg != name else [])
-    _name_dbg = re.compile('|'.join(re.escape(v) for v in _vars_dbg))
-    _SUB_EXCL = re.compile(r'코스피|코스닥|증시|서킷브레이커')
-    raw_results = []
-    for it in items:
-        title = _html.unescape(re.sub(r'<[^>]+>', '', it.get('title', '')))
-        desc  = _html.unescape(re.sub(r'<[^>]+>', '', it.get('description', '') or ''))
-        in_title  = bool(_name_dbg.search(title))
-        has_prod  = bool(_STRICT_PROD.search(title) or _STRICT_PROD.search(desc[:100]))
-        has_price = bool(_PRICE_MOVE.search(title)  or _SUB_EXCL.search(desc[:80]))
-        raw_results.append({
-            'title':     title,
-            'desc':      desc[:80],
-            'pub':       it.get('pubDate', ''),
-            'in_title':  in_title,
-            'has_prod':  has_prod,
-            'has_price': has_price,
-            'pass':      in_title and has_prod and not has_price,
-        })
-
-    # ── 2. 실제 _naver_issue_news 캐시 삭제 후 호출 ───────────────────────
-    cache_key = f"{code}:{name}"
-    _naver_issue_cache.pop(cache_key, None)   # 강제 캐시 클리어
-    issues = _naver_issue_news(code, name)
-
-    return jsonify({
-        'status':       res.status_code,
-        'total':        data.get('total', 0),
-        'raw_count':    len(items),
-        'pass_count':   sum(1 for r in raw_results if r['pass']),
-        'raw_results':  raw_results,
-        'issues_result': issues,   # 실제 함수 반환값
     })
 
 
