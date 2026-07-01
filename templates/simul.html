@@ -923,13 +923,22 @@
           <!-- 컨센서스 -->
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.consensus">
             <div class="dart-consensus" style="margin-bottom:8px">
-              <span class="dart-consensus-label"
+              <span v-if="companyInfo.fnguide.consensus.opinion_label"
+                    class="dart-consensus-label"
                     :class="Number(companyInfo.fnguide.consensus.opinion)>=4?'buy':Number(companyInfo.fnguide.consensus.opinion)>=3?'hold':'sell'">
                 {{ companyInfo.fnguide.consensus.opinion_label }}
               </span>
-              <span>목표주가 <b>{{ Number(companyInfo.fnguide.consensus.target_price.replace(/,/g,'')).toLocaleString('ko-KR') }}원</b></span>
-              <span style="color:#999;font-size:.73rem">추정기관 {{ companyInfo.fnguide.consensus.analyst_count }}개</span>
-              <span style="color:#999;font-size:.73rem">PER {{ companyInfo.fnguide.consensus.per }}배</span>
+              <span v-if="companyInfo.fnguide.consensus.target_price">
+                목표주가 <b>{{ Number(companyInfo.fnguide.consensus.target_price.replace(/,/g,'')).toLocaleString('ko-KR') }}원</b>
+              </span>
+              <span v-if="companyInfo.fnguide.consensus.analyst_count" style="color:#999;font-size:.73rem">
+                추정기관 {{ companyInfo.fnguide.consensus.analyst_count }}개
+              </span>
+              <span v-if="companyInfo.fnguide.consensus.eps" style="color:#999;font-size:.73rem">
+                EPS {{ Number(companyInfo.fnguide.consensus.eps.replace(/,/g,'')).toLocaleString('ko-KR') }}원
+              </span>
+              <span v-if="companyInfo.fnguide.consensus.per" style="color:#999;font-size:.73rem">PER {{ companyInfo.fnguide.consensus.per }}배</span>
+              <span v-if="companyInfo.fnguide.consensus.date" style="color:#bbb;font-size:.70rem;margin-left:4px">기준일 {{ companyInfo.fnguide.consensus.date }}</span>
             </div>
           </template>
           <!-- 기본정보 한 줄 -->
@@ -1088,57 +1097,107 @@
         <button class="dart-tab-btn" :class="{active:companyTab==='executives'}" @click="companyTab='executives'">경영진</button>
       </div>
 
-      <!-- 탭1: 기업실적 (FnGuide Financial Highlight 분기별) -->
+      <!-- 탭1: 기업실적 (FnGuide Financial Summary) -->
       <div v-if="companyTab==='financials'">
-        <template v-if="companyInfo.fnguide && companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
-          <!-- 폴백 안내 -->
-          <div v-if="companyInfo.fnguide.fh_source==='FnGuide-연간'"
-               style="background:#f0f8ff;border:1px solid #b8d4f0;border-radius:7px;padding:7px 12px;font-size:.78rem;color:#1a4a7a;margin-bottom:8px">
-            ℹ️ FnGuide 분기 데이터 미수록 → FnGuide 연간 기준 표시
-          </div>
+        <template v-if="companyInfo.fnguide && companyInfo.fnguide.fh_source && companyInfo.fnguide.fh_source!=='none'">
+          <!-- DART 폴백 안내 -->
           <div v-if="companyInfo.fnguide.fh_source==='DART'"
                style="background:#fffbe6;border:1px solid #ffe58f;border-radius:7px;padding:7px 12px;font-size:.78rem;color:#7a5a00;margin-bottom:8px">
-            ⚠️ FnGuide 데이터 미수록 → DART 공시 기준 표시 (분기 → 반기 → 사업보고서 순)
+            ⚠️ FnGuide 데이터 미수록 → DART 공시 기준 표시
           </div>
-          <div style="overflow-x:auto">
+
+          <!-- 연간 / 분기 서브탭 -->
+          <div v-if="companyInfo.fnguide.fh_source==='FnGuide' || companyInfo.fnguide.fh_source==='DART'"
+               style="display:flex;gap:6px;margin-bottom:10px">
+            <button @click="fhTab='annual'"
+                    :style="{padding:'4px 14px',borderRadius:'6px',border:'1px solid',fontSize:'.76rem',fontWeight:600,cursor:'pointer',
+                             background:fhTab==='annual'?'#4361ee':'#fff',
+                             color:fhTab==='annual'?'#fff':'#555',
+                             borderColor:fhTab==='annual'?'#4361ee':'#ddd'}">연간</button>
+            <button @click="fhTab='quarter'"
+                    :style="{padding:'4px 14px',borderRadius:'6px',border:'1px solid',fontSize:'.76rem',fontWeight:600,cursor:'pointer',
+                             background:fhTab==='quarter'?'#4361ee':'#fff',
+                             color:fhTab==='quarter'?'#fff':'#555',
+                             borderColor:fhTab==='quarter'?'#4361ee':'#ddd'}">분기</button>
+          </div>
+
+          <!-- 연간 테이블 -->
+          <div v-if="fhTab==='annual' && companyInfo.fnguide.annual_highlight && companyInfo.fnguide.annual_highlight.length"
+               style="overflow-x:auto">
             <table class="dart-table">
               <thead>
                 <tr>
-                  <th>기간</th>
-                  <th>매출액(억원)</th>
-                  <th>영업이익(억원)</th>
-                  <th>QoQ증감률</th>
-                  <th>순이익(억원)</th>
-                  <th>영업이익률</th>
+                  <th style="min-width:70px">연도</th>
+                  <th style="min-width:90px">매출액(억원)</th>
+                  <th style="min-width:90px">영업이익(억원)</th>
+                  <th style="min-width:70px">영업이익률</th>
+                  <th style="min-width:90px">당기순이익(억원)</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="q in companyInfo.fnguide.financial_highlight" :key="q.period"
-                    :style="{background: q.is_estimate ? '#fffbf0' : ''}">
+                <tr v-for="r in companyInfo.fnguide.annual_highlight" :key="r.period"
+                    :style="{background:r.is_estimate?'#fffbf0':''}">
                   <td>
-                    {{ q.period }}
-                    <span v-if="q.is_estimate" style="color:#e67e22;font-size:.68rem"> (E)</span>
-                    <span v-if="q.report_type" style="display:inline-block;margin-left:4px;padding:1px 5px;border-radius:4px;font-size:.65rem;font-weight:600;background:#e8f4fd;color:#1a73e8">{{ q.report_type }}</span>
+                    {{ r.period }}
+                    <span v-if="r.is_estimate" style="margin-left:3px;padding:1px 4px;background:#fff3cd;color:#d68910;border-radius:3px;font-size:.65rem;font-weight:700">E</span>
                   </td>
-                  <td>{{ q.revenue   ? q.revenue.toLocaleString('ko-KR')   : '-' }}</td>
-                  <td :style="{fontWeight:600,color:q.op_profit!=null?(q.op_profit>=0?'#2dc653':'#e63946'):''}">
-                    {{ q.op_profit  ? q.op_profit.toLocaleString('ko-KR')  : '-' }}
+                  <td>{{ r.revenue!=null ? r.revenue.toLocaleString('ko-KR') : '-' }}</td>
+                  <td :style="{fontWeight:600,color:r.op_profit!=null?(r.op_profit>=0?'#2dc653':'#e63946'):''}">
+                    {{ r.op_profit!=null ? r.op_profit.toLocaleString('ko-KR') : '-' }}
                   </td>
-                  <td :style="{color:q.op_growth==null?'':q.op_growth>=0?'#2dc653':'#e63946',fontWeight:q.op_growth!=null?600:400}">
-                    {{ q.op_growth!=null ? (q.op_growth>=0?'+':'')+q.op_growth+'%' : '-' }}
+                  <td :style="{color:r.op_margin!=null?(r.op_margin>=0?'#2dc653':'#e63946'):'',fontWeight:r.op_margin!=null?600:400}">
+                    {{ r.op_margin!=null ? r.op_margin+'%' : '-' }}
                   </td>
-                  <td>{{ q.net_profit ? q.net_profit.toLocaleString('ko-KR') : '-' }}</td>
-                  <td :style="{color:q.op_margin!=null?(q.op_margin>=0?'#2dc653':'#e63946'):'',fontWeight:q.op_margin!=null?600:400}">
-                    {{ q.op_margin!=null ? q.op_margin+'%' : '-' }}
-                  </td>
+                  <td>{{ r.net_profit!=null ? r.net_profit.toLocaleString('ko-KR') : '-' }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <div v-else-if="fhTab==='annual'" class="dart-empty" style="padding:12px 0;font-size:.8rem">연간 데이터 없음</div>
+
+          <!-- 분기 테이블 -->
+          <div v-if="fhTab==='quarter'"
+               style="overflow-x:auto">
+            <template v-if="companyInfo.fnguide.financial_highlight && companyInfo.fnguide.financial_highlight.length">
+              <table class="dart-table">
+                <thead>
+                  <tr>
+                    <th style="min-width:75px">분기</th>
+                    <th style="min-width:90px">매출액(억원)</th>
+                    <th style="min-width:90px">영업이익(억원)</th>
+                    <th style="min-width:70px">영업이익률</th>
+                    <th style="min-width:90px">당기순이익(억원)</th>
+                    <th style="min-width:70px">QoQ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="q in companyInfo.fnguide.financial_highlight" :key="q.period"
+                      :style="{background:q.is_estimate?'#fffbf0':''}">
+                    <td>
+                      {{ q.period }}
+                      <span v-if="q.is_estimate" style="margin-left:3px;padding:1px 4px;background:#fff3cd;color:#d68910;border-radius:3px;font-size:.65rem;font-weight:700">E</span>
+                    </td>
+                    <td>{{ q.revenue!=null ? q.revenue.toLocaleString('ko-KR') : '-' }}</td>
+                    <td :style="{fontWeight:600,color:q.op_profit!=null?(q.op_profit>=0?'#2dc653':'#e63946'):''}">
+                      {{ q.op_profit!=null ? q.op_profit.toLocaleString('ko-KR') : '-' }}
+                    </td>
+                    <td :style="{color:q.op_margin!=null?(q.op_margin>=0?'#2dc653':'#e63946'):'',fontWeight:q.op_margin!=null?600:400}">
+                      {{ q.op_margin!=null ? q.op_margin+'%' : '-' }}
+                    </td>
+                    <td>{{ q.net_profit!=null ? q.net_profit.toLocaleString('ko-KR') : '-' }}</td>
+                    <td :style="{color:q.op_growth==null?'':q.op_growth>=0?'#2dc653':'#e63946',fontWeight:q.op_growth!=null?600:400}">
+                      {{ q.op_growth!=null ? (q.op_growth>=0?'+':'')+q.op_growth+'%' : '-' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+            <div v-else class="dart-empty" style="padding:12px 0;font-size:.8rem">분기 데이터 없음</div>
+          </div>
+
           <div class="dart-period" style="margin-top:6px">
             출처:
-            <span v-if="companyInfo.fnguide.fh_source==='FnGuide'">FnGuide Financial Highlight (분기)</span>
-            <span v-else-if="companyInfo.fnguide.fh_source==='FnGuide-연간'">FnGuide Financial Highlight (연간)</span>
+            <span v-if="companyInfo.fnguide.fh_source==='FnGuide'">FnGuide Financial Summary</span>
             <span v-else-if="companyInfo.fnguide.fh_source==='DART'">DART 공시 (FnGuide 미수록)</span>
             &nbsp;(연결, 단위: 억원)
           </div>
@@ -1604,6 +1663,7 @@ createApp({
 
     const companyInfo    = ref(null);
     const companyTab     = ref('financials');
+    const fhTab          = ref('annual');   // 기업실적 서브탭: 'annual' | 'quarter'
     const companyLoading = ref(false);
     const bizExpanded    = ref(false);
 
@@ -2158,7 +2218,7 @@ createApp({
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
-      companyInfo, companyTab, companyLoading, fetchCompanyInfo, bizExpanded,
+      companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
       sellForm, sellPreview, sellLookingUp, canSellCalc,
       trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
       loadActiveStocks, selectActiveStock,
