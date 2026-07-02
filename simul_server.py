@@ -1418,12 +1418,40 @@ def _growth(cur, prev):
     if cur is None or not prev: return None
     return round((cur - prev) / abs(prev) * 100, 1)
 
-def _get_is_account(rows, *keywords):
-    """IS/CIS 구분의 행 중 keywords 중 하나라도 account_nm에 포함된 첫 번째 행 반환."""
-    for r in rows:
-        nm = (r.get('account_nm') or '').replace(' ', '')
-        if any(kw in nm for kw in keywords) and r.get('sj_div') in ('IS', 'CIS'):
-            return r
+def _get_is_account(rows, *keywords, exact=None):
+    """IS/CIS 구분의 행 중 keywords를 우선순위 순으로 탐색해 첫 매칭 행 반환.
+
+    행 순서(ord)가 키워드 우선순위보다 먼저 적용되면 부속/파생 계정이
+    본계정보다 먼저 매칭되는 문제가 있었음. 확인된 오매칭 사례:
+      - '5. 기타의영업수익' → '영업수익' 키워드에 매칭 (카카오뱅크)
+      - '기타영업수익' → '영업수익' 키워드에 매칭 (포스코퓨처엠)
+      - '기본주당분기순이익' → '분기순이익' 키워드에 매칭, EPS값이 총액으로
+        오인식되어 사실상 0에 가까운 값이 됨 (금양그린파워)
+    키워드를 outer loop로 돌려 우선순위를 지키고, '기타'(부속손익) 또는
+    '주당'(주당순이익=EPS) 이 포함된 계정은 1차 탐색에서 제외한다.
+
+    exact: '매출'처럼 접미사 없는 단독 계정명(삼아알미늄 등 일부 종목의
+    구버전 XBRL 레이블). 부분매칭으로 추가하면 '매출원가'/'매출총이익' 등에
+    오매칭되므로 완전일치로만, 키워드 매칭이 모두 실패한 뒤 최후에 시도한다.
+    """
+    is_rows = [r for r in rows if r.get('sj_div') in ('IS', 'CIS')]
+    def _is_sub_account(nm):
+        return '기타' in nm or '주당' in nm
+    for kw in keywords:
+        for r in is_rows:
+            nm = (r.get('account_nm') or '').replace(' ', '')
+            if kw in nm and not _is_sub_account(nm):
+                return r
+    for kw in keywords:
+        for r in is_rows:
+            nm = (r.get('account_nm') or '').replace(' ', '')
+            if kw in nm:
+                return r
+    for ex in (exact or []):
+        for r in is_rows:
+            nm = (r.get('account_nm') or '').replace(' ', '')
+            if nm == ex:
+                return r
     return None
 
 def _dart_fin_one(corp_code, year, reprt_code):
@@ -1449,7 +1477,7 @@ def _dart_fin_annual(corp_code: str) -> list:
     def _parse(rows, base_year):
         if not rows:
             return []
-        rev = _get_is_account(rows, '매출액', '영업수익')
+        rev = _get_is_account(rows, '매출액', '영업수익', exact=['매출'])
         op  = _get_is_account(rows, '영업이익', '영업손익')
         ni  = _get_is_account(rows, '당기순이익', '당기순손익', '분기순이익', '반기순이익')
         if not any([rev, op, ni]):
@@ -1510,7 +1538,7 @@ def _dart_fin_quarters(corp_code: str) -> list:
         rows = _dart_fin_one(corp_code, year, rc)
         if not rows:
             return None, None, ''
-        rev_row = _get_is_account(rows, '매출액', '영업수익')
+        rev_row = _get_is_account(rows, '매출액', '영업수익', exact=['매출'])
         op_row  = _get_is_account(rows, '영업이익', '영업손익')
         ni_row  = _get_is_account(rows, '당기순이익', '당기순손익', '분기순이익', '반기순이익')
         ni_acct = (ni_row or {}).get('account_nm', '')
@@ -2221,6 +2249,66 @@ def _dart_biz_summary(corp_code: str) -> dict:
 
 _fnguide_cache: dict = {}  # code → fnguide data
 
+_wr_cf1002_cache: dict = {}
+
+
+def _wr_cf1002_estimates(code: str, frq: str) -> list:
+    """WiseReport cF1002.aspx(cTB25) — 실적 3기 + 추정(E) 2기, 매출액/영업이익/당기순이익 포함.
+
+    finance.naver.com/item/coinfo.naver 의 Financial Summary 그리드가 이 AJAX로
+    로드된다. thead가 단순(재무년월 1개 + 지표별 고정 컬럼)해서 cTB26보다 훨씬
+    안전하게 파싱 가능. frq='0'=연간, frq='1'=분기. 컬럼 순서(재무년월 다음부터):
+    매출액금액, 매출액YoY, 영업이익, 당기순이익, EPS, PER, PBR, ROE, EV/EBITDA, 순부채비율, 주재무제표.
+    """
+    cache_key = f'{code}:{frq}'
+    if cache_key in _wr_cf1002_cache:
+        return _wr_cf1002_cache[cache_key]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': f'https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}',
+    }
+    try:
+        r = requests.get(
+            f'https://navercomp.wisereport.co.kr/v2/company/cF1002.aspx'
+            f'?cmp_cd={code}&finGubun=MAIN&frq={frq}&rpt=0&finAcctClass=&cn=',
+            headers=headers, timeout=10)
+        r.encoding = 'utf-8'
+        html = r.text
+    except Exception:
+        _wr_cf1002_cache[cache_key] = []
+        return []
+
+    def _num(raw):
+        s = re.sub(r'<[^>]+>', '', raw).replace(',', '').strip()
+        if not s or s in ('N/A', '-'):
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    rows = []
+    for row_m in re.finditer(r"<td class='center'>([^<]+)</td>(.*?)</tr>", html, re.DOTALL):
+        period_raw = row_m.group(1).strip()
+        is_est = '(E)' in period_raw
+        period = period_raw.replace('(A)', '').replace('(E)', '').strip()
+        tds = re.findall(r"<td class='num'>(.*?)</td>", row_m.group(2), re.DOTALL)
+        if len(tds) < 4:
+            continue
+        rev, op, ni = _num(tds[0]), _num(tds[2]), _num(tds[3])
+        if rev is None and op is None and ni is None:
+            continue
+        rows.append({
+            'period': period, 'is_estimate': is_est,
+            'revenue': rev, 'op_profit': op, 'net_profit': ni,
+            'op_margin': round(op / rev * 100, 1) if op is not None and rev else None,
+        })
+
+    _wr_cf1002_cache[cache_key] = rows
+    return rows
+
+
 def _fnguide_data(code: str) -> dict:
     """FnGuide에서 제품비율(키워드), 시장점유율, 투자의견, 목표주가 수집."""
     import xml.etree.ElementTree as ET, re as _re
@@ -2233,7 +2321,7 @@ def _fnguide_data(code: str) -> dict:
         'Accept-Language': 'ko-KR,ko;q=0.9',
     }
     result = {'keywords': [], 'products': [], 'market_shares': [], 'consensus': None,
-              'next_earnings': None, 'financial_highlight': [], 'peers': []}
+              'next_earnings': None, 'financial_highlight': []}
 
     # ── XML 데이터 (제품비율 / 시장점유율) ──────────────────
     try:
@@ -2623,19 +2711,19 @@ def _fnguide_data(code: str) -> dict:
             _src   = 'FnGuide' if (qtr_tbl or ann_tbl) else 'cTB26+보완'
             print(f'[재무하이라이트] {code} src={_src} '
                   f'ann={len(ann_fh)}(E:{_ann_e}) qtr={len(qtr_fh)}(E:{_qtr_e})')
-
-            future_qtrs = [q for q in qtr_fh
-                           if q.get('is_estimate') and q.get('op_profit') is not None]
-            if future_qtrs:
-                fq = future_qtrs[0]
-                result['next_earnings'] = {
-                    'date':   fq['period'],
-                    'est_op': str(round(fq['op_profit'])),
-                    'vs_3m':  None,
-                    'vs_ly':  None,
-                }
         else:
             print(f'[재무하이라이트] {code} 재무 데이터 미발견')
+
+        # ── 예상실적: WiseReport cF1002.aspx(cTB25) — 매출액/영업이익/당기순이익
+        # 실적3기+추정(E)2기를 안전하게 제공 (thead 단순, cTB26보다 신뢰도 높음).
+        # 분기 우선, 분기 추정이 전혀 없는 종목은 연간으로 폴백.
+        cf_qtr = [r for r in _wr_cf1002_estimates(code, '1') if r['is_estimate']]
+        if cf_qtr:
+            result['next_earnings'] = {'freq': 'quarter', 'periods': cf_qtr[:2]}
+        else:
+            cf_ann = [r for r in _wr_cf1002_estimates(code, '0') if r['is_estimate']]
+            if cf_ann:
+                result['next_earnings'] = {'freq': 'annual', 'periods': cf_ann[:2]}
 
         # ── ② 컨센서스: cTB15 (투자의견/목표주가/EPS/PER/추정기관수) ────
         pos_tb15 = c1_html.find('id="cTB15"')
@@ -2849,6 +2937,47 @@ def _naver_issue_news(code: str, stock_name: str = '') -> list:
     return result
 
 
+# 반복성 높은 지분/임원 관련 공시 — 사업·제품 현황과 무관하므로 제외
+_DISCL_EXCLUDE_PAT = re.compile(
+    r'주식등의대량보유상황보고서|임원.주요주주특정증권등|특정증권등소유상황보고서|'
+    r'최대주주.*변경|주식소각결정|전환청구권행사|신주인수권행사|'
+    r'자기주식취득|자기주식처분|자기주식.*신탁계약|의결권.*불통일|'
+    r'주주총회소집|사외이사.*선임|기타경영사항'
+)
+
+
+def _dart_recent_disclosures(corp_code: str) -> list:
+    """DART 최근 공시 목록(최근 4개월) — 지분·임원 등 반복성 공시 제외, 최대 8건."""
+    now = datetime.now()
+    d = _dart_req('list.json', {
+        'corp_code': corp_code,
+        'bgn_de':    (now - timedelta(days=120)).strftime('%Y%m%d'),
+        'end_de':    now.strftime('%Y%m%d'),
+        'sort':      'date', 'sort_mth': 'desc',
+        'page_count': '30',
+    }, timeout=12)
+    if not d or not d.get('list'):
+        return []
+
+    out = []
+    for item in d['list']:
+        nm = item.get('report_nm', '')
+        if _DISCL_EXCLUDE_PAT.search(nm):
+            continue
+        rcept_no = item.get('rcept_no', '')
+        raw_dt   = item.get('rcept_dt', '')
+        date_fmt = f'{raw_dt[:4]}-{raw_dt[4:6]}-{raw_dt[6:]}' if len(raw_dt) == 8 else raw_dt
+        out.append({
+            'date':      date_fmt,
+            'title':     nm.strip(),
+            'rcept_no':  rcept_no,
+            'url':       f'https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}',
+        })
+        if len(out) >= 8:
+            break
+    return out
+
+
 @app.route('/api/dart/company-info')
 def dart_company_info():
     """DART Open API 기반 기업정보(기본정보·실적·주주·경영진) + Naver 뉴스 조회."""
@@ -2873,6 +3002,7 @@ def dart_company_info():
         f_fng     = ex.submit(_fnguide_data, code)
         f_ann     = ex.submit(_dart_fin_annual, corp_code)
         f_qtr     = ex.submit(_dart_fin_quarters, corp_code)
+        f_discl   = ex.submit(_dart_recent_disclosures, corp_code)
         corp_d         = f_corp.result() or {}
         shareholders   = f_shr.result()
         executives     = f_exec.result()
@@ -2881,6 +3011,7 @@ def dart_company_info():
         fnguide        = f_fng.result()
         dart_annual    = f_ann.result()
         dart_quarters  = f_qtr.result()
+        disclosures    = f_discl.result()
 
     # ── Financial Highlight 폴백 처리 ─────────────────────────────────────
     # 캐시된 dict를 직접 수정하지 않도록 얕은 복사
@@ -2969,6 +3100,7 @@ def dart_company_info():
         'shareholders': shareholders,
         'executives':   executives,
         'invest_summary': {**invest_summary, 'issues': issues},
+        'disclosures':  disclosures,
         'fnguide':      fnguide,
     })
 
