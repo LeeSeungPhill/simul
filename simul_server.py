@@ -1792,59 +1792,6 @@ def _dart_executives_latest(corp_code):
 
     return result
 
-def _extract_dart_biz_keywords(text: str) -> list:
-    """사업의 개요 텍스트에서 주요 사업부문 및 매출 키워드 추출 (최대 4개)."""
-    import re
-    keywords = []
-    seen = set()
-    skip = {'당사', '자사', '동사', '회사', '본사', '연결', '별도', '주요', '기타',
-            '국내', '해외', '글로벌', '사업', '영업', '기존', '신규', '전체', '해당',
-            '각', '등의', '제품', '서비스', '부문', '사업부', '관련', '통해', '통한'}
-    if not text:
-        return keywords
-
-    # 1. "XX부문", "XX 사업부문", "XX 사업부", "XX사업" 패턴 (공백 없이도 매칭)
-    for m in re.finditer(
-            r'([가-힣A-Za-z0-9]{2,12}(?:[\s·][가-힣A-Za-z]{1,8})?)\s*'
-            r'(사업부문|사업부|부문|사업)', text):
-        base = m.group(1).strip().rstrip('·')
-        suffix = m.group(2)
-        if base not in seen and base not in skip and 2 <= len(base) <= 14:
-            seen.add(base)
-            keywords.append(f"{base} {suffix}" if suffix not in base else base)
-
-    # 2. 괄호 안 주력 제품/사업 설명 — "DS부문(반도체)", "IM부문(스마트폰)" 형태
-    if len(keywords) < 4:
-        for m in re.finditer(
-                r'([가-힣A-Za-z0-9]{2,10}부문|[가-힣A-Za-z0-9]{2,10}사업부?)\s*'
-                r'\(([가-힣A-Za-z0-9·,\s]{2,20})\)', text):
-            inner = m.group(2).split(',')[0].strip()
-            if inner not in seen and inner not in skip and 2 <= len(inner) <= 12:
-                seen.add(inner)
-                keywords.append(inner)
-
-    # 3. "XX 제품/소재/솔루션/서비스" — 주력 품목
-    if len(keywords) < 4:
-        for m in re.finditer(
-                r'([가-힣A-Za-z0-9·]{2,15})\s*'
-                r'(?:반도체|디스플레이|배터리|화학|철강|소재|소자|모듈|부품|장비|시스템|솔루션|서비스|제품)'
-                r'\s*(?:의|을|를|이|가|은|는|,|을\s|를\s|을\s통)', text):
-            base = m.group(1).strip()
-            if base not in seen and base not in skip and 2 <= len(base) <= 15:
-                seen.add(base)
-                keywords.append(base)
-
-    # 4. "XX 매출" — 매출 구성 키워드
-    if len(keywords) < 4:
-        for m in re.finditer(
-                r'([가-힣A-Za-z]{2,10})\s*(?:부문|사업)?\s*매출\s*(?:비중|비율|구성|은|이|의|액)', text):
-            base = m.group(1).strip()
-            if base not in seen and base not in skip and 2 <= len(base) <= 10:
-                seen.add(base)
-                keywords.append(f"{base} 매출")
-
-    return keywords[:4]
-
 
 def _dart_exec_voting_map(corp_code: str) -> dict:
     """사업보고서 XML ACODE=SH5_STK_VOTY 파싱 → {임원명: 의결권있는주식수(str)} 반환."""
@@ -2166,83 +2113,191 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
     return result
 
 
+_DART_NAVI_HDR = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    'Referer': 'https://dart.fss.or.kr/',
+}
+
+
 def _dart_biz_summary(corp_code: str) -> dict:
-    """DART 최신 사업보고서 ZIP에서 주요 사업 내용 텍스트 + 키워드 추출 (결과 캐시)."""
+    """DART 정기공시 항목별 검색(navi/searchNavi.do)에서 최신 보고서의
+    '사업의 개요' 섹션을 정확한 offset/length로 가져와 문단·표 항목을
+    정리해 반환한다 (결과 캐시).
+
+    예전에는 사업보고서 ZIP 전체를 내려받아 목차(ToC) 오탐, 표 텍스트가
+    한 덩어리로 뭉치는 문제를 직접 방어해야 했으나, DART 자체 문서뷰어가
+    이미 정확한 섹션 경계(offset/length)를 알려주므로 그걸 그대로 활용해
+    훨씬 단순하고 정확하게 파싱한다.
+    """
+    import re, html as _html
+
     if corp_code in _dart_biz_cache:
         return _dart_biz_cache[corp_code]
 
-    import zipfile, io, re
+    empty = {'text': '', 'sentences': [], 'keywords': [], 'period': ''}
 
-    # 최신 사업보고서 rcept_no 조회
-    now = datetime.now()
-    d = _dart_req('list.json', {
-        'corp_code': corp_code,
-        'bgn_de': f'{now.year - 3}0101',
-        'pblntf_detail_ty': 'A001',
-        'sort': 'date', 'sort_mth': 'desc',
-        'page_count': '5',
-    }, timeout=12)
-    empty = {'text': '', 'period': ''}
-    if not d or not d.get('list'):
+    # ① 정기공시 항목별 검색: naviCode='A002' = 사업의 내용 → 최신 보고서로 자동 매칭
+    try:
+        nav = requests.get(
+            'https://dart.fss.or.kr/navi/searchNavi.do',
+            params={'naviCrpCik': corp_code, 'naviCode': 'A002'},
+            headers=_DART_NAVI_HDR, timeout=15)
+        nav.encoding = 'utf-8'
+        nav_html = nav.text
+    except Exception:
         _dart_biz_cache[corp_code] = empty
         return empty
 
-    report   = d['list'][0]
-    rcept_no = report['rcept_no']
-    period   = f"{report.get('rcept_dt', '')[:4]}년 사업보고서"
+    rpt_m = re.search(r'([가-힣]+보고서)\(사업연도:(\d{4})\)', nav_html)
+    period = f"{rpt_m.group(2)}년 {rpt_m.group(1)}" if rpt_m else ''
 
-    # 문서 ZIP 다운로드
+    view_m = re.search(r'src="(/report/viewer\.do\?[^"]+)"', nav_html)
+    if not view_m:
+        result = {**empty, 'period': period}
+        _dart_biz_cache[corp_code] = result
+        return result
+    rcept_no_m = re.search(r'rcpNo=(\d+)', view_m.group(1))
+    rcept_no = rcept_no_m.group(1) if rcept_no_m else ''
+
+    # ② 뷰어: 사업보고서 원문 중 해당 섹션만 잘라서 제공 (offset/length 지정됨)
     try:
-        res  = requests.get(f"{DART_BASE}/document.xml",
-                            params={'crtfc_key': DART_API_KEY, 'rcept_no': rcept_no},
-                            timeout=60)
-        z    = zipfile.ZipFile(io.BytesIO(res.content))
-        # 파일 크기 내림차순 → 가장 큰 XML 파일이 본문 내용
-        xml_infos = [(n, z.getinfo(n).file_size)
-                     for n in z.namelist() if n.endswith('.xml')]
-        xml_infos.sort(key=lambda x: x[1], reverse=True)
-        content = z.read(xml_infos[0][0]).decode('utf-8', errors='replace')
+        vr = requests.get('https://dart.fss.or.kr' + view_m.group(1).replace('&amp;', '&'),
+                           headers=_DART_NAVI_HDR, timeout=20)
+        vr.encoding = 'utf-8'
+        content = vr.text
     except Exception:
-        result = {'text': '', 'period': period}
+        result = {**empty, 'period': period, 'rcept_no': rcept_no}
         _dart_biz_cache[corp_code] = result
         return result
 
-    # 섹션 마커 우선순위
-    MARKERS = [
-        '라. 주요 사업의 내용',
-        '1. 사업의 개요',
-        '사업의 개요',
-        'II. 사업의 내용',
-        'Ⅱ. 사업의 내용',
-        '2. 주요 제품 및 서비스',
-    ]
+    # "1. 사업의 개요" ~ 다음 대제목(section-2) 직전까지만 슬라이스
+    start_m = re.search(r'1\.\s*사업의\s*개요', content)
+    if not start_m:
+        result = {**empty, 'period': period, 'rcept_no': rcept_no}
+        _dart_biz_cache[corp_code] = result
+        return result
+    start_pos = start_m.end()
+    next_m = re.search(r"class='section-2'", content[start_pos:])
+    end_pos = start_pos + next_m.start() if next_m else len(content)
+    section = content[start_pos:end_pos]
 
-    biz_text = ''
-    for marker in MARKERS:
-        pos = content.find(marker)
-        if pos < 0:
-            continue
-        chunk = content[pos: pos + 40000]
-        nxt = re.search(r'<TITLE[^>]+ATOC="Y"', chunk[100:])
-        bound = (nxt.start() + 100) if nxt else len(chunk)
-        chunk = chunk[:bound]
+    def _clean(raw):
+        t = re.sub(r'<BR\s*/?>', ' ', raw, flags=re.IGNORECASE)
+        t = re.sub(r'<[^>]+>', '', t)
+        t = _html.unescape(t)
+        return re.sub(r'\s+', ' ', t).strip()
 
-        texts, total = [], 0
-        # P, SPAN, TD, LI 태그에서 텍스트 수집 (4자 이상)
-        for m in re.finditer(r'<(?:P|SPAN|TD|LI|DIV)(?:\s[^>]*)?>([^<]{4,})</', chunk):
-            t = re.sub(r'\s+', ' ', m.group(1)).strip()
-            if len(t) < 4 or re.fullmatch(r'[\d\s%,\.]+', t):
+    # 소제목 뒤에 <BR/>로 상세 설명이 이어지는 경우를 두 가지로 구분해서 처리한다.
+    #   [SKIP] "1. 클라우드", "1) 클라우드", "- 클라우드" 처럼 제목은 아예
+    #          포함하지 않고, 제목 바로 다음의 문장 1개만 포함한 뒤 다음
+    #          소제목 전까지 제외.
+    # 소제목은 짧고 문장 종결어미로 끝나지 않는다는 특징으로 판별.
+    _TITLE_SKIP_PAT = re.compile(r"^(\d+[.\)]|-|[가-힣][.\)]|\(\d+\)|\<\d+\>|\([가-힣]\))\s+\S")
+
+    def _title_kind(seg):
+        # "포함"(함), "확대"(대) 같은 명사가 소제목 끝에 오면 오탐이 나므로,
+        # 한국어 서술문의 가장 뚜렷한 종결어미인 "다"로만 판별한다
+        # (습니다/합니다/있습니다/한다 등은 모두 "다"로 끝남).
+        if len(seg) > 50 or seg.endswith('다'):
+            return None
+        if _TITLE_SKIP_PAT.match(seg):
+            return 'skip'
+        return None
+
+    # 뒤에 나오는 표·목록을 가리키기만 할 뿐 실제 사업 내용이 없는 안내 문구는
+    # 제외 (예: "당사 연결실체의 주요 사업 개요는 다음과 같습니다.")
+    _REF_PHRASES = ('아래와 같습니다', '다음과 같습니다', '참고하여 주시기 바랍니다',
+                     '참조해 주십시오', '참고하시기 바랍니다')
+
+    def _has_ref_phrase(s):
+        return any(p in s for p in _REF_PHRASES)
+
+    # 표는 따로 처리하기 위해 우선 떼어내고, 나머지 <P> 문단에서 프로즈 텍스트 수집
+    tables = re.findall(r'<TABLE.*?</TABLE>', section, re.DOTALL | re.IGNORECASE)
+    no_table = re.sub(r'<TABLE.*?</TABLE>', ' ', section, flags=re.DOTALL | re.IGNORECASE)
+
+    prose = []
+
+    def _add_prose(s):
+        if len(s) < 8 or s in prose or _has_ref_phrase(s):
+            return
+        prose.append(s)
+
+    mode = None  # None(일반) | 'skip_all'(소제목 구간 전체 제외) | 'awaiting_one'(다음 문장 1개만 대기)
+    for pm in re.finditer(r'<P[^>]*>(.*?)</P>', no_table, re.DOTALL | re.IGNORECASE):
+        # <BR/> 단위로 쪼개야 같은 <P> 안에서 "소제목<BR/>상세설명"이 분리된다
+        for raw_seg in re.split(r'<BR\s*/?>', pm.group(1), flags=re.IGNORECASE):
+            seg = _clean(raw_seg)
+            # "[엔터테인먼트 부문]" 같은 대괄호 라벨은 제목이든 문장 앞에 붙어있든
+            # 표시하지 않고 제거만 한다 (뒤에 이어지는 실제 설명 문장은 그대로 유지)
+            seg = re.sub(r'^\[[^\]]{1,20}\]\s*', '', seg).strip()
+            if len(seg) < 2:
                 continue
-            texts.append(t)
-            total += len(t)
-            if total >= 4000 or len(texts) >= 30:
-                break
-        if texts:
-            biz_text = '\n'.join(texts)
+            kind = _title_kind(seg)
+            # "(단위:백만원)"처럼 괄호로 시작하는 일반 문장은 단위·주석 표기일 뿐
+            # 사업 내용이 아니므로 제외 (단, "(1)"/"(가)" 같은 소제목은 위에서
+            # 이미 kind로 판별되었으므로 영향 없음)
+            if kind is None and seg.startswith('('):
+                continue
+            if kind == 'keep':
+                if seg not in prose:
+                    prose.append(seg)
+                mode = 'skip_all'
+                continue
+            if kind == 'skip':
+                mode = 'awaiting_one'
+                continue  # 제목 자체는 포함하지 않음
+            if mode == 'awaiting_one':
+                # 제목 바로 다음 문장 1개만 포함 (여러 문장이 이어져 있으면 첫 문장만)
+                first_sent = re.split(r'(?<=[다음임함됨])\.\s*', seg)[0].strip().rstrip('.').strip()
+                _add_prose(first_sent)
+                mode = 'skip_all'
+                continue
+            if mode == 'skip_all':
+                # 소제목 구간의 나머지 내용은 다음 소제목이 나올 때까지 전부 제외
+                continue
+            if len(seg) <= 280:
+                _add_prose(seg)
+            else:
+                # 문단이 지나치게 길면 문장 단위로 잘라 읽기 좋게 분리
+                for s in re.split(r'(?<=[다음임함됨])\.\s*', seg):
+                    _add_prose(s.strip().rstrip('.').strip())
+
+    # 표(있으면): 행 단위로 "회사명/구분: 설명" 형태 요약 (최대 4행) — 표를 한 덩어리로
+    # 이어붙이지 않고 행별로 처리하므로 문장이 지나치게 길어지는 문제가 없다.
+    table_items = []
+    for tbl in tables:
+        rows = re.findall(r'<TR[^>]*>(.*?)</TR>', tbl, re.DOTALL | re.IGNORECASE)
+        for row in rows[1:]:  # 첫 행은 항상 헤더(회사명/구분 등)이므로 건너뜀
+            cells = [_clean(c) for c in
+                     re.findall(r'<T[DH][^>]*>(.*?)</T[DH]>', row, re.DOTALL | re.IGNORECASE)]
+            cells = [c for c in cells if c]
+            if len(cells) < 2:
+                continue
+            name, desc = cells[0], cells[-1]
+            # 매출 추이표처럼 값이 순수 숫자(금액·비율)인 재무 데이터 행은
+            # "회사명: 사업개요" 형태가 아니므로 제외
+            # 예: "매출: 5,982,627", "양극활물질: 100.00%", "영업손익: (140,252,572,527)"
+            if (name == desc or len(desc) < 4
+                    or re.fullmatch(r'\(?[\d,\.\-]+\)?%?', desc)
+                    or _has_ref_phrase(desc)):
+                continue
+            item = f"{name}: {desc}"
+            if item not in table_items:
+                table_items.append(item)
+        if len(table_items) >= 4:
             break
 
-    result = {'text': biz_text, 'period': period, 'rcept_no': rcept_no,
-              'keywords': _extract_dart_biz_keywords(biz_text)}
+    sentences = (prose[:6] + table_items[:4])[:8]
+
+    result = {
+        'text':      ' '.join(sentences),
+        'sentences': sentences,
+        'keywords':  [],
+        'period':    period,
+        'rcept_no':  rcept_no,
+    }
     _dart_biz_cache[corp_code] = result
     return result
 
@@ -3003,6 +3058,7 @@ def dart_company_info():
         f_ann     = ex.submit(_dart_fin_annual, corp_code)
         f_qtr     = ex.submit(_dart_fin_quarters, corp_code)
         f_discl   = ex.submit(_dart_recent_disclosures, corp_code)
+        f_bizsum  = ex.submit(_dart_biz_summary, corp_code)
         corp_d         = f_corp.result() or {}
         shareholders   = f_shr.result()
         executives     = f_exec.result()
@@ -3012,6 +3068,7 @@ def dart_company_info():
         dart_annual    = f_ann.result()
         dart_quarters  = f_qtr.result()
         disclosures    = f_discl.result()
+        biz_summary    = f_bizsum.result()
 
     # ── Financial Highlight 폴백 처리 ─────────────────────────────────────
     # 캐시된 dict를 직접 수정하지 않도록 얕은 복사
@@ -3101,6 +3158,7 @@ def dart_company_info():
         'executives':   executives,
         'invest_summary': {**invest_summary, 'issues': issues},
         'disclosures':  disclosures,
+        'biz_summary':  biz_summary,
         'fnguide':      fnguide,
     })
 

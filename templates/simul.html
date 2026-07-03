@@ -948,6 +948,18 @@
             <span v-if="companyInfo.est_dt" style="color:#aaa">설립 {{ companyInfo.est_dt }}</span>
             <a v-if="companyInfo.hm_url" :href="'http://'+companyInfo.hm_url.replace(/^https?:\/\//,'')" target="_blank" style="color:#1a73e8">🔗 홈페이지</a>
           </div>
+          <!-- 사업의 개요 (DART 정기공시, 주요 키워드 포함 문장만) -->
+          <template v-if="companyInfo.biz_summary && companyInfo.biz_summary.sentences && companyInfo.biz_summary.sentences.length">
+            <div style="border-top:1px solid #e8eaff;padding-top:7px;margin-bottom:8px">
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">
+                사업의 개요
+                <span style="color:#aaa;font-size:.68rem;font-weight:400">({{ companyInfo.biz_summary.period }})</span>
+              </div>
+              <ul style="margin:0;padding-left:16px;font-size:.75rem;color:#444;line-height:1.7">
+                <li v-for="s in companyInfo.biz_summary.sentences" :key="s">{{ s }}</li>
+              </ul>
+            </div>
+          </template>
           <!-- 제품 및 사업 현황 소개: 업황·제품수주 관련 뉴스 + 최근 공시 -->
           <template v-if="(companyInfo.invest_summary && companyInfo.invest_summary.issues && companyInfo.invest_summary.issues.length)
                           || (companyInfo.disclosures && companyInfo.disclosures.length)">
@@ -1058,9 +1070,12 @@
                 </div>
                 <div style="display:flex;justify-content:space-between">
                   <span>영업이익</span>
-                  <b :style="{color: p.op_profit!=null?(p.op_profit>=0?'#2dc653':'#e63946'):'#333'}">
-                    {{ p.op_profit!=null ? p.op_profit.toLocaleString('ko-KR') : '-' }}억
-                  </b>
+                  <span>
+                    <b :style="{color: p.op_profit!=null?(p.op_profit>=0?'#2dc653':'#e63946'):'#333'}">
+                      {{ p.op_profit!=null ? p.op_profit.toLocaleString('ko-KR') : '-' }}억
+                    </b>
+                    <span v-if="p.op_margin!=null" style="color:#888;margin-left:4px">{{ p.op_margin }}%</span>
+                  </span>
                 </div>
                 <div style="display:flex;justify-content:space-between">
                   <span>당기순이익</span>
