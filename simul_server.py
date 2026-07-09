@@ -1877,6 +1877,7 @@ def _dart_exec_voting_map(corp_code: str) -> dict:
 
 
 _INVEST_POINT_SH      = os.environ.get('INVEST_POINT_SH', '/home/terra/bin/run_invest_point.sh')
+_INVEST_POINT_SSH_HOST = os.environ.get('INVEST_POINT_SSH_HOST', '')  # 원격 실행 시 Tailscale IP (비어있으면 로컬 실행)
 _INVEST_ANALYSIS_TIMEOUT = 1800  # mvp_graph.py 1건당 최대 대기(초) — LLM 체인 특성상 넉넉히
 
 _invest_analysis_queue:   "queue.Queue[str]" = queue.Queue()
@@ -1900,8 +1901,15 @@ def _invest_analysis_worker():
         code = _invest_analysis_queue.get()
         try:
             print(f"[투자분석] {code} mvp_graph 실행 시작")
+            if _INVEST_POINT_SSH_HOST:
+                cmd = ['ssh', '-o', 'StrictHostKeyChecking=no',
+                       '-o', 'BatchMode=yes',
+                       f'terra@{_INVEST_POINT_SSH_HOST}',
+                       _INVEST_POINT_SH, code]
+            else:
+                cmd = [_INVEST_POINT_SH, code]
             result = subprocess.run(
-                [_INVEST_POINT_SH, code],
+                cmd,
                 capture_output=True, timeout=_INVEST_ANALYSIS_TIMEOUT,
             )
             if result.returncode != 0:
