@@ -7,6 +7,7 @@ import subprocess
 import requests
 import json
 import re
+import queue
 import threading as _threading
 import pandas as pd
 import urllib3
@@ -1861,12 +1862,101 @@ def _dart_exec_voting_map(corp_code: str) -> dict:
     return result
 
 
+_INVEST_POINT_DIR     = r'C:\project\invest_point'
+_INVEST_ANALYSIS_TIMEOUT = 1800  # mvp_graph.py 1건당 최대 대기(초) — LLM 체인 특성상 넉넉히
+
+_invest_analysis_queue:   "queue.Queue[str]" = queue.Queue()
+_invest_analysis_pending: set              = set()   # 대기열 등록 + 실행 중 종목 (중복 등록 방지)
+_invest_analysis_lock     = _threading.Lock()
+
+def _enqueue_invest_analysis(code: str):
+    """mvp_graph.py 분석을 백그라운드 대기열에 등록 (입력 순서대로 워커가 1건씩 순차 실행)."""
+    with _invest_analysis_lock:
+        if code in _invest_analysis_pending:
+            return
+        _invest_analysis_pending.add(code)
+    _invest_analysis_queue.put(code)
+    print(f"[투자분석] {code} 백그라운드 분석 대기열 등록")
+
+
+def _invest_analysis_worker():
+    """전용 워커 스레드 1개 — 대기열에서 하나씩 꺼내 mvp_graph.py를 순차 실행.
+    동시 실행을 막아 로컬 LLM(Ollama) 부하를 피하고, 조회 순서(입력 순서)를 보장한다."""
+    while True:
+        code = _invest_analysis_queue.get()
+        try:
+            print(f"[투자분석] {code} mvp_graph 실행 시작")
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            result = subprocess.run(
+                ['python', 'mvp_graph.py', code],
+                cwd=_INVEST_POINT_DIR, env=env,
+                capture_output=True, timeout=_INVEST_ANALYSIS_TIMEOUT,
+            )
+            if result.returncode != 0:
+                err = result.stderr.decode('utf-8', errors='replace')[-2000:]
+                print(f"[투자분석] {code} 실행 실패(rc={result.returncode}): {err}")
+            else:
+                print(f"[투자분석] {code} 실행 완료 — 다음 조회부터 반영")
+                # 오늘자 캐시를 지워 다음 조회 시 새로 저장된 investment_summary를 읽게 한다
+                today_key = f"{code}:{datetime.now().strftime('%Y%m%d')}"
+                _analysis_history_invest_points_cache.pop(today_key, None)
+        except subprocess.TimeoutExpired:
+            print(f"[투자분석] {code} 실행 시간 초과 ({_INVEST_ANALYSIS_TIMEOUT}초)")
+        except Exception as e:
+            print(f"[투자분석] {code} 실행 오류: {e}")
+        finally:
+            with _invest_analysis_lock:
+                _invest_analysis_pending.discard(code)
+            _invest_analysis_queue.task_done()
+
+
+_threading.Thread(target=_invest_analysis_worker, daemon=True).start()
+
+
+_analysis_history_invest_points_cache: dict = {}
+
+def _analysis_history_invest_points(code: str) -> list:
+    """analysis_history 테이블에서 해당 종목의 '오늘' investment_summary 중 [투자포인트] 섹션을
+    문장 단위로 반환. 오늘자 기록이 없으면 빈 리스트를 즉시 반환하고(캐시 없음 응답), mvp_graph.py
+    분석을 백그라운드 대기열에 등록한다 — LLM 실행이 느려 요청을 막지 않고, 생성 결과는
+    다음 조회부터 반영된다."""
+    today_key = f"{code}:{datetime.now().strftime('%Y%m%d')}"
+    if today_key in _analysis_history_invest_points_cache:
+        return _analysis_history_invest_points_cache[today_key]
+
+    points: list = []
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute("""
+            SELECT investment_summary FROM analysis_history
+            WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
+              AND run_at >= CURRENT_DATE
+            ORDER BY run_at DESC LIMIT 1
+        """, (code,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0]:
+            m = re.search(r'\[투자포인트\]\s*(.*?)(?:\n\[|\Z)', row[0], re.DOTALL)
+            if m:
+                section = m.group(1).strip()
+                points  = [p.strip() for p in re.split(r'(?<=\.)\s+', section) if p.strip()]
+        else:
+            _enqueue_invest_analysis(code)
+    except Exception as e:
+        print(f"[기업정보] analysis_history 조회 오류: {e}")
+
+    _analysis_history_invest_points_cache[today_key] = points
+    return points
+
+
 _naver_reports_cache: dict = {}
 
 def _naver_reports(code: str, max_reports: int = 10) -> dict:
     """네이버증권 모바일 API — 종목별 리서치 리포트 (최근 10건).
-    반환: {reports, consensus, invest_points}"""
-    import re
+    반환: {reports, consensus}"""
     from collections import Counter
 
     # 캐시 키에 현재 분기 포함 — 분기가 바뀌거나 서버 재시작 없이도 분기 필터 갱신
@@ -1876,7 +1966,7 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
     if _cache_key in _naver_reports_cache:
         return _naver_reports_cache[_cache_key]
 
-    empty = {'reports': [], 'consensus': None, 'invest_points': []}
+    empty = {'reports': [], 'consensus': None}
     try:
         r = requests.get(
             f'https://m.stock.naver.com/api/research/stock/{code}',
@@ -1948,167 +2038,7 @@ def _naver_reports(code: str, max_reports: int = 10) -> dict:
             'report_count': len(reports),
         }
 
-    # 투자포인트: 완성된 문장/표현으로만 구성 (실적·매출 전망 우선)
-    PERF_KW      = re.compile(r'영업이익|매출액|매출|순이익|실적|분기|반기|연간|성장|전망|YoY|QoQ|전년|전분기|증가|감소|흑자|적자|기대|예상|가이던스|EPS|BPS|ROE|수익성|원가|마진|점유율|출하|수주|수요|공급')
-    SENT_BOILER  = re.compile(r'목표주가|투자의견|매수의견|(?:매수|중립|매도|BUY|HOLD|SELL)[^\w]|유지|상향|하향')
-    TITLE_BOILER = re.compile(r'목표주가|투자의견|매수의견|(?:매수|중립|매도|BUY|HOLD|SELL)[^\w]')  # 제목엔 상향/하향 허용
-    QUANT_KW     = re.compile(r'영업이익|매출액|순이익|EPS|BPS|ROE|YoY|QoQ|\d+조|\d+억|\d+%')
-    _SENT_SP     = re.compile(r'(?<!\d)\.(?!\d)|。|\n|[■▶●◆▷►•◉▪]')
-
-    def _clean_sent(s: str) -> str:
-        s = re.sub(r'^\s*[\[【\(][^\]】\)]{1,20}[\]】\)]\s*', '', s)
-        s = re.sub(r'^\s*[■▶●◆▷►•◉▪\-\*]+\s*', '', s)
-        s = re.sub(r'^\s*\d[A-Z0-9F]*\s*(?:Preview|Review|Update|Comment)\s*[:：]\s*', '', s, flags=re.IGNORECASE)
-        m = re.match(r'^([^:：]{2,40}[:：])\s*(.*)', s, re.DOTALL)
-        if m and not QUANT_KW.search(m.group(1)) and len(m.group(2)) > 10:
-            s = m.group(2)
-        return s.strip()
-
-    def _trim_to_complete(s: str, min_len: int = 20) -> str:
-        """마지막 완성 문장 어미까지 자른다. 완성 불가능하면 빈 문자열."""
-        s = s.strip()
-        if len(s) >= min_len and re.search(r'[가-힣]\s*$', s):
-            return s
-        pos_list = [m.end() for m in re.finditer(r'[다요]\s*(?=[^가-힣]|$)', s)]
-        if pos_list:
-            t = s[:pos_list[-1]].rstrip('.,! ')
-            if len(t) >= min_len and re.search(r'[가-힣]\s*$', t):
-                return t
-        return ''
-
-    def _scrape_report_para(nid) -> str:
-        """네이버 리서치 리포트 본문 첫 완성 문장 스크래핑."""
-        if not nid:
-            return ''
-        try:
-            url = f'https://finance.naver.com/research/company_read.naver?nid={nid}&page=1'
-            rv = requests.get(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://finance.naver.com/research/',
-            }, timeout=7)
-            if rv.status_code != 200:
-                return ''
-            body = rv.text
-            raw = ''
-            for pat in [
-                r'<td[^>]+class="view_cnt"[^>]*>(.*?)</td>',
-                r'<td[^>]+class="[^"]*view_cnt[^"]*"[^>]*>(.*?)</td>',
-                r'<div[^>]+class="[^"]*view_cnt[^"]*"[^>]*>(.*?)</div>',
-            ]:
-                m2 = re.search(pat, body, re.DOTALL)
-                if m2:
-                    raw = m2.group(1)
-                    break
-            if not raw:
-                return ''
-            raw = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL)
-            raw = re.sub(r'<style[^>]*>.*?</style>', '', raw, flags=re.DOTALL)
-            text = re.sub(r'<[^>]+>', ' ', raw)
-            text = re.sub(r'\s+', ' ', text).strip()
-            # 완성 문장 2개 추출
-            sents = re.split(r'(?<=[다요])\s+', text)
-            parts = [s.strip() for s in sents if len(s.strip()) >= 20][:2]
-            return ' '.join(parts)[:200] if parts else ''
-        except Exception:
-            return ''
-
-    # ── 현재 분기 범위 계산 ────────────────────────────────────────────────
-    _now      = datetime.now()
-    _q_num    = (_now.month - 1) // 3 + 1          # 1~4
-    _q_yr2    = str(_now.year)[2:]                  # '26'
-    _pq_num   = _q_num - 1 if _q_num > 1 else 4
-    _pq_yr2   = _q_yr2 if _q_num > 1 else str(int(_q_yr2) - 1)
-    _q_start  = datetime(_now.year, (_q_num - 1) * 3 + 1, 1).strftime('%Y-%m-%d')
-
-    # 이전 분기만 언급하는 문장 패턴 (현재/미래 키워드가 없으면 제외)
-    PREV_Q_PAT  = re.compile(
-        rf'{_pq_num}Q{_pq_yr2}|{_pq_yr2}년?\s*{_pq_num}분기|전분기|직전분기'
-    )
-    CURR_FWD_PAT = re.compile(
-        rf'{_q_num}Q{_q_yr2}|{_q_yr2}년?\s*{_q_num}분기'
-        rf'|{_q_yr2}F|FY{_q_yr2}|전망|예상|기대|가이던스|하반기|연간|향후|올해'
-    )
-
-    def _is_prev_q_only(text: str) -> bool:
-        """이전 분기만 언급하고 현재·미래 관련 내용이 없으면 True."""
-        return bool(PREV_Q_PAT.search(text)) and not bool(CURR_FWD_PAT.search(text))
-
-    # ── 현재 분기 리포트만 사용 (없으면 invest_points 비움) ────────────────
-    cq_pairs    = [(r, p) for r, p in zip(reports, full_previews)
-                   if r.get('date', '') >= _q_start]
-    if not cq_pairs:
-        result = {'reports': reports, 'consensus': consensus, 'invest_points': []}
-        _naver_reports_cache[code] = result
-        return result
-
-    cq_reports  = [r for r, _ in cq_pairs]
-    cq_previews = [p for _, p in cq_pairs]
-
-    invest_points: list = []
-    seen_pts: set = set()
-
-    def _near_dup_pt(text: str) -> bool:
-        """첫 20자 또는 15자 포함 관계로 기존 항목과 유사 여부 확인."""
-        pre20 = text[:20]
-        pre15 = text[:15]
-        for s in seen_pts:
-            if pre20 == s[:20]:
-                return True
-            if len(pre15) >= 15 and (pre15 in s or s[:15] in text):
-                return True
-        return False
-
-    # 1순위: 실적·전망 키워드 포함 리포트 제목 (상향/하향 허용)
-    for rpt in cq_reports:
-        title = rpt['title'].strip()
-        if (title and len(title) >= 6
-                and PERF_KW.search(title) and not TITLE_BOILER.search(title)
-                and not _is_prev_q_only(title)
-                and not _near_dup_pt(title)):
-            seen_pts.add(title)
-            invest_points.append(title)
-        if len(invest_points) >= 4:
-            break
-
-    # 2순위: previewContent 완성 문장
-    for full_prev in cq_previews:
-        if len(invest_points) >= 4:
-            break
-        for raw in _SENT_SP.split(full_prev):
-            sent     = _clean_sent(raw)
-            complete = _trim_to_complete(sent)
-            if (complete
-                    and PERF_KW.search(complete)
-                    and not SENT_BOILER.search(complete)
-                    and not _is_prev_q_only(complete)
-                    and not _near_dup_pt(complete)):
-                seen_pts.add(complete)
-                invest_points.append(complete[:130])
-                break
-
-    # 3순위: 리포트 본문 스크래핑 → 완성 실적·전망 문장 (현재 분기 상위 3건 병렬)
-    if len(invest_points) < 4:
-        scrape_ids = [rpt['id'] for rpt in cq_reports[:3]]
-        with ThreadPoolExecutor(max_workers=3) as scr_ex:
-            scraped_texts = list(scr_ex.map(_scrape_report_para, scrape_ids))
-        for s_text in scraped_texts:
-            if len(invest_points) >= 4 or not s_text:
-                break
-            for raw in _SENT_SP.split(s_text):
-                sent     = _clean_sent(raw)
-                complete = _trim_to_complete(sent)
-                if (complete
-                        and PERF_KW.search(complete)
-                        and not SENT_BOILER.search(complete)
-                        and not _is_prev_q_only(complete)
-                        and not _near_dup_pt(complete)):
-                    seen_pts.add(complete)
-                    invest_points.append(complete[:130])
-                    break
-
-    # 현재 분기 내용이 없으면 표시 안 함 (4순위 일반 보완 없음)
-
-    result = {'reports': reports, 'consensus': consensus, 'invest_points': invest_points[:4]}
+    result = {'reports': reports, 'consensus': consensus}
     _naver_reports_cache[_cache_key] = result
     return result
 
@@ -3053,6 +2983,7 @@ def dart_company_info():
         f_shr     = ex.submit(_dart_shareholders_latest, corp_code)
         f_exec    = ex.submit(_dart_executives_latest, corp_code)
         f_reports = ex.submit(_naver_reports, code)
+        f_ipts    = ex.submit(_analysis_history_invest_points, code)
         f_issues  = ex.submit(_naver_issue_news, code, stock_name)
         f_fng     = ex.submit(_fnguide_data, code)
         f_ann     = ex.submit(_dart_fin_annual, corp_code)
@@ -3062,7 +2993,7 @@ def dart_company_info():
         corp_d         = f_corp.result() or {}
         shareholders   = f_shr.result()
         executives     = f_exec.result()
-        invest_summary = f_reports.result()
+        invest_summary = {**f_reports.result(), 'invest_points': f_ipts.result()}
         issues         = f_issues.result()
         fnguide        = f_fng.result()
         dart_annual    = f_ann.result()
