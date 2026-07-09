@@ -14,6 +14,20 @@ import urllib3
 from concurrent.futures import ThreadPoolExecutor
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def _load_env(path: str = ".env") -> None:
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    if not os.path.exists(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip())
+
+_load_env()
+
 app = Flask(__name__)
 
 CONN_STRING  = "dbname='fund_risk_mng' host='100.123.201.50' port='5432' user='postgres' password='asdf1234'"
@@ -1862,7 +1876,7 @@ def _dart_exec_voting_map(corp_code: str) -> dict:
     return result
 
 
-_INVEST_POINT_DIR     = r'C:\project\invest_point'
+_INVEST_POINT_SH      = os.environ.get('INVEST_POINT_SH', '/home/terra/bin/run_invest_point.sh')
 _INVEST_ANALYSIS_TIMEOUT = 1800  # mvp_graph.py 1건당 최대 대기(초) — LLM 체인 특성상 넉넉히
 
 _invest_analysis_queue:   "queue.Queue[str]" = queue.Queue()
@@ -1886,11 +1900,8 @@ def _invest_analysis_worker():
         code = _invest_analysis_queue.get()
         try:
             print(f"[투자분석] {code} mvp_graph 실행 시작")
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
             result = subprocess.run(
-                ['python', 'mvp_graph.py', code],
-                cwd=_INVEST_POINT_DIR, env=env,
+                [_INVEST_POINT_SH, code],
                 capture_output=True, timeout=_INVEST_ANALYSIS_TIMEOUT,
             )
             if result.returncode != 0:

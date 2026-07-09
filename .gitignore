@@ -1,0 +1,4 @@
+.env
+simul_exports/
+__pycache__/
+*.pyc
