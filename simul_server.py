@@ -51,7 +51,7 @@ def _load_krx() -> pd.DataFrame | None:
             timeout=15
         )
         res.encoding = 'EUC-KR'
-        df = pd.read_html(res.text, header=0)[0][['회사명', '종목코드']]
+        df = pd.read_html(io.StringIO(res.text), header=0)[0][['회사명', '종목코드']]
         df = df.rename(columns={'회사명': 'company', '종목코드': 'code'})
         df['code'] = df['code'].apply(
             lambda c: str(c).strip().lstrip('A').zfill(6)[-6:]
