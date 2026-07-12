@@ -1952,7 +1952,7 @@ def _analysis_history_invest_points(code: str) -> list:
             SELECT investment_summary FROM analysis_history
             WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
               AND run_at >= CURRENT_DATE
-            ORDER BY run_at DESC LIMIT 1
+            ORDER BY id DESC LIMIT 1
         """, (code,))
         row = cur.fetchone()
         cur.close()
