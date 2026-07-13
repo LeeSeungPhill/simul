@@ -23,7 +23,7 @@ import kis_api_resp as resp
 SIMUL_TABLE       = "public.trading_trail_simul"
 SIMUL_ACCT        = "SIMUL"
 API_NICK          = "phills2"          # 시장 데이터(분봉·일봉) 조회에만 사용하는 계좌
-TOTAL_INVEST_BASE = 20_000_000         # 전체투자금 기준 (원)
+TOTAL_INVEST_BASE = 25_000_000         # 전체투자금 기준 (원)
 
 BASE_URL    = "https://openapi.koreainvestment.com:9443"
 conn_string = "dbname='fund_risk_mng' host='192.168.50.81' port='5432' user='postgres' password='asdf1234'"

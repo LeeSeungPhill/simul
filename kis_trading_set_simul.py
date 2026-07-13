@@ -19,7 +19,7 @@ SIMUL_ACCT     = "SIMUL"
 SIMUL_TABLE    = "trading_trail_simul"
 SIMUL_DLY_ACCT   = "74346047"       # dly_acct_balance_simul acct 키
 SIMUL_ACTIVE_TPS = ['1', '2', '3', 'L', 'P']
-INITIAL_CAPITAL  = 20_000_000
+INITIAL_CAPITAL  = 25_000_000
 API_NICK    = "phills2"           # 가격 조회용 KIS API 계좌 닉네임 (없으면 None)
 URL_BASE    = "https://openapi.koreainvestment.com:9443"
 
