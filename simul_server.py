@@ -1949,9 +1949,8 @@ def _analysis_history_invest_points(code: str) -> list:
         conn = get_conn()
         cur  = conn.cursor()
         cur.execute("""
-            SELECT investment_summary FROM analysis_history
+            SELECT investment_summary, CASE WHEN to_char(run_at, 'YYYYMMDD') = to_char(current_date, 'YYYYMMDD') THEN '1' ELSE '2' END FROM analysis_history
             WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
-              AND run_at >= CURRENT_DATE
             ORDER BY id DESC LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -1962,8 +1961,8 @@ def _analysis_history_invest_points(code: str) -> list:
             if m:
                 section = m.group(1).strip()
                 points  = [p.strip() for p in re.split(r'(?<=\.)\s+', section) if p.strip()]
-        else:
-            _enqueue_invest_analysis(code)
+            if row[1] == '2':
+                _enqueue_invest_analysis(code)
     except Exception as e:
         print(f"[기업정보] analysis_history 조회 오류: {e}")
 
