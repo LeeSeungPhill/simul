@@ -357,9 +357,9 @@ def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty
         avail = int(h.get(avail_key, 0) or 0)
         if cur <= 0 or avail <= 0:
             continue
-        # 매도 할당 금액 : 수급차트 strength > 70 이면 전체 물량, 아니면 절반 물량
+        # 매도 할당 금액 : 수급 또는 차트 strength > 70 이면 전체 물량, 아니면 절반 물량
         cap_amt = h["eval_sum"] if h["sell_priority"] >= TOP_CUT else h["eval_sum"] * PER_NAME_CAP
-        # 시장비율 초과하여 감축할 금액을 차감할 물량
+        # 시장비율 초과하여 감축할 금액(cap_amt 와 초과한 물량에서 차감한 물량 중 최소 금액)
         amt = min(cap_amt, excess - filled)
         qty = int(amt // cur)
         qty = min(qty, avail)
@@ -460,11 +460,11 @@ def quality_score_from_history(conn, code, as_of=None):
     # 성장트렌드
     base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70, "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
     # 영업이익증감률 : ±10
-    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5         
-    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑                 
-    val_adj = 15 if vsig else 0                               
-    # 목표주가 대비 상승여력 : 0~10 
-    up_adj  = max(0, min(40, float(upside or 0))) * 0.25      
+    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5
+    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑
+    val_adj = 15 if vsig else 0
+    # 목표주가 대비 상승여력 : 0~10
+    up_adj = max(0, min(40, float(upside or 0))) * 0.25
     return max(0.0, min(100.0, base + fwd_adj + val_adj + up_adj))
 
 
