@@ -14,12 +14,12 @@ kis_market_ratio_rebalance.py
   excess          = 현재 트레이딩 평가금액 - target_stock   (>0 이면 매도)
 
 매도 대상 선정·수량 배분 기준
-  ① 수급점수 + 차트점수        (simul_server 점수식 재사용, 각 0~100) → 종합점수 낮은 종목 우선 매도
-  ② KOSPI/KOSDAQ 시장 흐름 추종 (시장별 목표비율로 버킷 초과분 분리 → 약한 시장을 더 매도)
+  수급점수 + 차트점수(simul_server 점수식 재사용, 각 0~100)를 합산한 종합점수(strength)가
+  낮은 종목부터 우선 매도. KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 단일 우선순위로 배분.
   invest_point 성장/가치 점수(quality)는 참고용으로 계산·표시만 하고 매도 우선순위 산정에서는 제외.
 
 정책 결정 (합의)
-  - 우선 '일 단위(horizon='D')'만 처리. 주/월은 horizon_market_ratio에 구조만 남겨둠.
+  - 우선 '일 단위(horizon='D')'만 처리.
   - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
     (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
      두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
@@ -52,10 +52,9 @@ URL_BASE    = "https://openapi.koreainvestment.com:9443"
 conn_string = "dbname='fund_risk_mng' host='192.168.50.81' port='5432' user='postgres' password='asdf1234'"
 
 # 리밸런싱 가중치 (튜닝 포인트)
-W_SUPPLY      = 0.5    # strength = W_SUPPLY*수급 + W_CHART*차트
-W_CHART       = 0.5
-# sell_priority = 100 - strength (invest_point/quality는 매도 우선순위에서 제외, 참고용 표시만 유지)
-TOP_CUT       = 70     # sell_priority 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 50%
+W_SUPPLY      = 0.5    # strength = W_SUPPLY*수급
+W_CHART       = 0.5    # strength = W_CHART*차트 
+TOP_CUT       = 70     # sell_priority(100 - strength) 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 50%
 PER_NAME_CAP  = 0.5    # 종목당 1일 최대 매도 비중 (평가금액 대비)
 
 REBAL_WINDOW  = (dtime(15, 18), dtime(15, 29))   # 동시호가 접수 창
@@ -330,48 +329,17 @@ def _calc_supply_score(ohlcv, inv, price, ssts=None):
 # ────────────────────────────────────────────────────────────────────────────
 # 코어 로직 (순수 함수 — 라이브/백테스트 공용, 주입 가능)
 # ────────────────────────────────────────────────────────────────────────────
-_SIGN = {"01": +1, "02": -1, "03": +1, "04": -1, "05": +1, "06": -1}
-
-
-def horizon_market_ratio(sig, market, horizon="D"):
-    """market: 'kospi'|'kosdak', horizon: 'D'|'W'|'M' → 0~100 시장별 목표 주식비율.
-    단일 market_ratio 만 저장되므로 6개 timeframe 신호에서 horizon별로 재산출."""
-    s = _SIGN.get(sig.get(f"{market}_short"), 0)
-    m = _SIGN.get(sig.get(f"{market}_mid"),   0)
-    l = _SIGN.get(sig.get(f"{market}_long"),  0)
-    if   horizon == "D": raw, span = s,             1     # 일: 단기
-    elif horizon == "W": raw, span = s + 2*m,       3     # 주: 단기+중기
-    else:                raw, span = s + 2*m + 3*l, 6     # 월: 단기+중기+장기(장기 가중)
-    return int(50 + raw / span * 50)
-
-
-def market_excess(cash, eval_kospi, eval_kosdaq, sig, horizon="D"):
-    """공유 현금을 시장별 평가금액 비중으로 배분 → 시장별 독립 초과분(원) 산출.
-    반환: (kospi_excess, kosdaq_excess)"""
-    tot = eval_kospi + eval_kosdaq
-    if tot <= 0:
-        return 0, 0
-    w_kp, w_kd = eval_kospi / tot, eval_kosdaq / tot
-    base_kp = eval_kospi  + cash * w_kp
-    base_kd = eval_kosdaq + cash * w_kd
-    ex_kp = max(0, eval_kospi  - base_kp * horizon_market_ratio(sig, "kospi",  horizon) / 100)
-    ex_kd = max(0, eval_kosdaq - base_kd * horizon_market_ratio(sig, "kosdak", horizon) / 100)
-    return int(ex_kp), int(ex_kd)
-
-
-def classify_market(price_out):
-    """inquire_price output 의 rprs_mrkt_kor_name 으로 시장 분류.
-    ETF/ETN 은 추종지수(코스닥150 등)와 무관하게 실제로는 KOSPI 시장에 상장되므로 최우선 kospi 처리.
-    'KSQ150'(코스닥150 소속 표기) 등 코스닥 계열 표기는 kosdak, 그 외 기본값은 kospi."""
-    name = (price_out or {}).get("rprs_mrkt_kor_name", "") or ""
-    upper = name.upper()
-    if "ETF" in upper or "ETN" in upper:
-        return "kospi"
-    return "kosdak" if ("코스닥" in name or "KOSDAQ" in upper or "KSQ" in upper) else "kospi"
+def total_excess(cash, total_eval, market_ratio):
+    """base = 현금 + 전체 평가금액, target = base*market_ratio/100, excess = 평가금액-target(>0 이면 매도).
+    KOSPI/KOSDAQ 구분 없이 트레이딩풀 전체를 대상으로 한 단일 초과분(원)."""
+    if market_ratio is None or total_eval <= 0:
+        return 0
+    base = total_eval + cash
+    return int(max(0, total_eval - base * market_ratio / 100))
 
 
 def sell_priority(strength):
-    """수급+차트 종합점수(strength) 약할수록(낮을수록) 우선순위 높음.
+    """수급 또는 차트 strength 약할수록(낮을수록) 우선순위 높음.
     invest_point(quality, 성장/가치 점수)는 매도 우선순위 산정에서 제외(참고용 표시만 유지)."""
     return 100 - strength
 
@@ -389,7 +357,9 @@ def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty
         avail = int(h.get(avail_key, 0) or 0)
         if cur <= 0 or avail <= 0:
             continue
+        # 매도 할당 금액 : 수급차트 strength > 70 이면 전체 물량, 아니면 절반 물량
         cap_amt = h["eval_sum"] if h["sell_priority"] >= TOP_CUT else h["eval_sum"] * PER_NAME_CAP
+        # 시장비율 초과하여 감축할 금액을 차감할 물량
         amt = min(cap_amt, excess - filled)
         qty = int(amt // cur)
         qty = min(qty, avail)
@@ -399,27 +369,24 @@ def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty
     return orders
 
 
-def build_rebalance_orders(holdings, cash, sig, strength_fn, quality_fn, horizon="D"):
-    """코어 엔진. holdings 각 dict: code,name,market,eval_sum,current_price,avail_qty,purchase_price.
+def build_rebalance_orders(holdings, cash, market_ratio, strength_fn, quality_fn):
+    """코어 엔진. holdings 각 dict: code,name,eval_sum,current_price,avail_qty,purchase_price.
     strength_fn(code)->0~100, quality_fn(code)->0~100 주입.
     quality(invest_point)는 참고용으로 h['quality']에 기록만 하고 sell_priority 산정에는 쓰지 않음.
-    반환: [(holding, qty), ...]"""
-    eval_kp = sum(h["eval_sum"] for h in holdings if h["market"] == "kospi")
-    eval_kd = sum(h["eval_sum"] for h in holdings if h["market"] == "kosdak")
-    ex_kp, ex_kd = market_excess(cash, eval_kp, eval_kd, sig, horizon)
+    KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 sell_priority 단일 순위로 배분.
+    반환: ([(holding, qty), ...], excess)"""
+    total_eval = sum(h["eval_sum"] for h in holdings)
+    excess = total_excess(cash, total_eval, market_ratio)
+    if excess <= 0:
+        return [], excess
 
-    orders = []
-    for mk, excess in (("kospi", ex_kp), ("kosdak", ex_kd)):
-        if excess <= 0:
-            continue
-        bucket = [h for h in holdings if h["market"] == mk]
-        for h in bucket:
-            st = strength_fn(h["code"])
-            ql = quality_fn(h["code"])
-            h["strength"], h["quality"] = st, ql
-            h["sell_priority"] = sell_priority(st)
-        orders += allocate(bucket, excess)
-    return orders, (ex_kp, ex_kd)
+    for h in holdings:
+        st = strength_fn(h["code"])
+        ql = quality_fn(h["code"])
+        h["strength"], h["quality"] = st, ql
+        h["sell_priority"] = sell_priority(st)      # 수급점수, 차트점수 기반 매도 우선 순위
+        # h["sell_priority"] = sell_priority(ql)      # 성장트렌드, 영업이익증감률, 예상실적 상승 대비 밴드하단 위치여부, 목표주가 대비 상승여력 기반 매도 우선 순위
+    return allocate(holdings, excess), excess
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -490,11 +457,14 @@ def quality_score_from_history(conn, code, as_of=None):
     if not r:
         return 45.0   # 자료 없음 → 중립
     trend, fwd, vsig, band, upside = r
-    base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70,
-            "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
-    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5        # ±10
-    val_adj = 15 if vsig else 0                                # 저평가+실적↑
-    up_adj  = max(0, min(40, float(upside or 0))) * 0.25       # 0~10
+    # 성장트렌드
+    base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70, "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
+    # 영업이익증감률 : ±10
+    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5         
+    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑                 
+    val_adj = 15 if vsig else 0                               
+    # 목표주가 대비 상승여력 : 0~10 
+    up_adj  = max(0, min(40, float(upside or 0))) * 0.25      
     return max(0.0, min(100.0, base + fwd_adj + val_adj + up_adj))
 
 
@@ -553,7 +523,7 @@ def _make_strength_fn(ac, cache):
 
     def fn(code):
         if code in cache:
-            return cache[code]["strength"]
+            return cache[code]
         time.sleep(0.25)
         ohlcv = _fetch_daily_ohlcv(at, ak, asec, code)
         ssts  = _fetch_short_selling(at, ak, asec, code)
@@ -563,8 +533,13 @@ def _make_strength_fn(ac, cache):
         supply = _calc_supply_score(ohlcv, inv, price, ssts=ssts)
         chart  = 50 if chart  is None else chart
         supply = 50 if supply is None else supply
-        st = W_SUPPLY * supply + W_CHART * chart
-        cache[code] = {"strength": st, "market": classify_market(price)}
+        # 합산(차트+수급) strength = W_SUPPLY * supply + W_CHART * chart
+        # st = W_SUPPLY * supply + W_CHART * chart
+        # 차트 strength = W_CHART * chart
+        st = W_CHART * chart
+        # 수급 strength = W_SUPPLY * supply
+        # st = W_SUPPLY * supply
+        cache[code] = st
         return st
     return fn
 
@@ -581,28 +556,22 @@ def run(nick, horizon="D", dry_run=False, force=False):
         ac = account(nick, conn)
         acct_no = ac["acct_no"]
 
-        cash, sig, mr = load_fund_signals(conn, acct_no)
+        cash, _sig, mr = load_fund_signals(conn, acct_no)
         holdings = load_holdings(conn, acct_no)
         if not holdings:
             print(f"[{nick}] 트레이딩 보유 없음 → 스킵")
             return
 
-        # 시장 분류 (price fetch 캐시와 공유)
         cache = {}
         strength_fn = _make_strength_fn(ac, cache)
-        for h in holdings:
-            po = _fetch_cur_price_out(ac["access_token"], ac["app_key"], ac["app_secret"], h["code"])
-            h["market"] = classify_market(po)
-            time.sleep(0.1)
 
         def quality_fn(code):
             return quality_score_from_history(conn, code)
 
-        orders, (ex_kp, ex_kd) = build_rebalance_orders(
-            holdings, cash, sig, strength_fn, quality_fn, horizon)
+        orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
 
         print(f"[{nick}] cash={cash:,} market_ratio={mr} "
-              f"KOSPI초과={ex_kp:,} KOSDAQ초과={ex_kd:,} 매도후보={len(orders)}건")
+              f"초과={excess:,} 매도후보={len(orders)}건")
 
         for h, qty in orders:
             if has_pending_sell(conn, acct_no, h["code"]):
@@ -633,40 +602,22 @@ def run(nick, horizon="D", dry_run=False, force=False):
 # ────────────────────────────────────────────────────────────────────────────
 SIMUL_ACCT       = "SIMUL"          # trading_trail_simul.acct_no
 SIMUL_DLY_ACCT   = "74346047"     # dly_*_simul 의 acct (실제 값에 맞게 조정)
-API_NICK         = "phills2"   
-
-def _sim_market_of(conn, code, ac=None):
-    """백테스트 시장 분류. 마스터 테이블 우선, 없으면 라이브 API 폴백(근사)."""
-    # 선택: 종목 마스터가 있으면 사용 (예: stock_item.market). 없으면 API.
-    if ac:
-        po = _fetch_cur_price_out(ac["access_token"], ac["app_key"], ac["app_secret"], code)
-        return classify_market(po)
-    return "kospi"
 
 
-def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
+def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
                        dly_acct=SIMUL_DLY_ACCT):
     """
     sim_date(YYYYMMDD) 종가 기준 리밸런싱을 시뮬레이션.
       - 보유:   dly_trading_balance_simul (balance_price=매입가, balance_qty, balance_amt=보유금액, value_amt=수익금액)
       - 현금:   dly_acct_balance_simul.prvs_excc_amt
-      - 신호:   dly_acct_balance (실제 그 날의 kospi_*/kosdak_* / market_ratio)
+      - 시장비율: dly_acct_balance.market_ratio (실제 그 날의 값)
       - 기준①:  strength_mode='neutral'(50 고정) | 'pit'(로컬 일봉 이력 필요)
-      - 기준③:  analysis_history point-in-time (run_at <= sim_date)
+      - 참고:    invest_point(quality)는 analysis_history point-in-time (run_at <= sim_date) 값으로 표시만
     매도분은 trading_trail_simul(trail_tp='4')에 기록하고 dly_trading_balance_simul 잔량을 차감.
     dly_acct_balance_simul 재집계는 기존 simul 스크립트가 담당.
     """
     conn = db.connect(conn_string)
     try:
-        
-        # API 조회용 계좌 정보
-        ac = None
-        if API_NICK:
-            try:
-                ac = account(API_NICK, conn)
-            except Exception as e_ac:
-                print(f"[SIMUL] API 계좌({API_NICK}) 조회 실패 : {e_ac}")
-        
         cur = conn.cursor()
         # 1) 보유 포지션
         cur.execute("""
@@ -687,8 +638,7 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
             holdings.append({"code": code, "name": name or code,
                              "current_price": cur_price, "eval_sum": eval_sum,
                              "purchase_price": int(float(bprice or 0)),
-                             "avail_qty": bqty,
-                             "market": _sim_market_of(conn, code, ac)})
+                             "avail_qty": bqty})
 
         # 2) 현금 (sim_date 시점 예수금)
         cur.execute("""
@@ -698,10 +648,9 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
         cr = cur.fetchone()
         cash = int(cr[0]) if cr and cr[0] is not None else 0
 
-        # 3) 그 날의 시장 신호 (실제 dly_acct_balance)
+        # 3) 그 날의 시장비율 (실제 dly_acct_balance)
         cur.execute("""
-            SELECT kospi_short, kospi_mid, kospi_long,
-                   kosdak_short, kosdak_mid, kosdak_long, market_ratio
+            SELECT market_ratio
             FROM dly_acct_balance WHERE dt = %s
             ORDER BY last_chg_date DESC NULLS LAST LIMIT 1
         """, (sim_date,))
@@ -709,9 +658,7 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
         if not sr:
             print(f"[SIMUL {sim_date}] dly_acct_balance 신호 없음 → 스킵")
             return {"date": sim_date, "orders": []}
-        sig = {"kospi_short": sr[0], "kospi_mid": sr[1], "kospi_long": sr[2],
-               "kosdak_short": sr[3], "kosdak_mid": sr[4], "kosdak_long": sr[5]}
-        mr = sr[6]
+        mr = sr[0]
         cur.close()
 
         # 4) 점수 함수 (point-in-time)
@@ -726,11 +673,10 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
             return 50.0  # neutral: 기준①을 백테스트에서 중립 처리(순위는 기준③이 좌우)
 
         # 5) 주문 산출
-        orders, (ex_kp, ex_kd) = build_rebalance_orders(
-            holdings, cash, sig, strength_fn, quality_fn, horizon)
+        orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
 
         print(f"[SIMUL {sim_date}] cash={cash:,} mr={mr} "
-              f"KOSPI초과={ex_kp:,} KOSDAQ초과={ex_kd:,} 매도={len(orders)}건")
+              f"초과={excess:,} 매도={len(orders)}건")
 
         # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
         #    (simul_server.py /api/sell · _do_simul_sell_update 와 동일 패턴: INSERT 아님)
@@ -794,7 +740,7 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral", ac=None,
                   f"(quality={h.get('quality',0):.0f}, trail_tp {cur_trail_tp}→{new_trail_tp})")
 
         return {"date": sim_date, "market_ratio": mr,
-                "excess": {"kospi": ex_kp, "kosdaq": ex_kd},
+                "excess": excess,
                 "orders": applied,
                 "realized_pnl": sum(a["pnl"] for a in applied)}
     finally:
