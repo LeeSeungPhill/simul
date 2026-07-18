@@ -1935,39 +1935,54 @@ _threading.Thread(target=_invest_analysis_worker, daemon=True).start()
 
 _analysis_history_invest_points_cache: dict = {}
 
-def _analysis_history_invest_points(code: str) -> list:
-    """analysis_history 테이블에서 해당 종목의 '오늘' investment_summary 중 [투자포인트] 섹션을
-    문장 단위로 반환. 오늘자 기록이 없으면 빈 리스트를 즉시 반환하고(캐시 없음 응답), mvp_graph.py
-    분석을 백그라운드 대기열에 등록한다 — LLM 실행이 느려 요청을 막지 않고, 생성 결과는
-    다음 조회부터 반영된다."""
+def _extract_bracket_points(text: str, tag: str) -> list:
+    """LLM 리포트/투자포인트 요약 텍스트에서 [tag] 섹션을 찾아 문장 단위로 분리."""
+    if not text:
+        return []
+    m = re.search(rf'\[{re.escape(tag)}\]\s*(.*?)(?:\n\[|\Z)', text, re.DOTALL)
+    if not m:
+        return []
+    section = m.group(1).strip()
+    return [p.strip() for p in re.split(r'(?<=\.)\s+', section) if p.strip()]
+
+
+def _analysis_history_invest_points(code: str) -> dict:
+    """analysis_history 테이블에서 해당 종목의 최신 기록으로 핵심이슈/투자포인트/리스크를
+    문장 단위로 반환. 투자포인트는 investment_summary 컬럼, 핵심이슈·리스크는 report 원문
+    컬럼에서 추출한다(핵심이슈·리스크는 investment_summary에 포함되지 않는 LLM 원본 리포트
+    섹션이기 때문). 최신 기록이 오늘자가 아니면 있는 데이터로 우선 응답하고, mvp_graph 분석을
+    백그라운드 대기열에 등록한다 — LLM 실행이 느려 요청을 막지 않고, 생성 결과는 다음
+    조회부터 반영된다."""
     today_key = f"{code}:{datetime.now().strftime('%Y%m%d')}"
     if today_key in _analysis_history_invest_points_cache:
         return _analysis_history_invest_points_cache[today_key]
 
-    points: list = []
+    result = {'invest_points': [], 'core_issues': [], 'risks': []}
     try:
         conn = get_conn()
         cur  = conn.cursor()
         cur.execute("""
-            SELECT investment_summary, CASE WHEN to_char(run_at, 'YYYYMMDD') = to_char(current_date, 'YYYYMMDD') THEN '1' ELSE '2' END FROM analysis_history
+            SELECT investment_summary, report,
+                   CASE WHEN to_char(run_at, 'YYYYMMDD') = to_char(current_date, 'YYYYMMDD') THEN '1' ELSE '2' END
+            FROM analysis_history
             WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
             ORDER BY id DESC LIMIT 1
         """, (code,))
         row = cur.fetchone()
         cur.close()
         conn.close()
-        if row and row[0]:
-            m = re.search(r'\[투자포인트\]\s*(.*?)(?:\n\[|\Z)', row[0], re.DOTALL)
-            if m:
-                section = m.group(1).strip()
-                points  = [p.strip() for p in re.split(r'(?<=\.)\s+', section) if p.strip()]
-            if row[1] == '2':
+        if row:
+            inv_summary, report, is_today = row
+            result['invest_points'] = _extract_bracket_points(inv_summary or '', '투자포인트')
+            result['core_issues']   = _extract_bracket_points(report or '', '핵심 이슈')
+            result['risks']         = _extract_bracket_points(report or '', '리스크')
+            if is_today == '2':
                 _enqueue_invest_analysis(code)
     except Exception as e:
         print(f"[기업정보] analysis_history 조회 오류: {e}")
 
-    _analysis_history_invest_points_cache[today_key] = points
-    return points
+    _analysis_history_invest_points_cache[today_key] = result
+    return result
 
 
 _naver_reports_cache: dict = {}
@@ -3011,7 +3026,7 @@ def dart_company_info():
         corp_d         = f_corp.result() or {}
         shareholders   = f_shr.result()
         executives     = f_exec.result()
-        invest_summary = {**f_reports.result(), 'invest_points': f_ipts.result()}
+        invest_summary = {**f_reports.result(), **f_ipts.result()}
         issues         = f_issues.result()
         fnguide        = f_fng.result()
         dart_annual    = f_ann.result()
