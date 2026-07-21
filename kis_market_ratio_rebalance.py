@@ -19,7 +19,7 @@ kis_market_ratio_rebalance.py
   invest_point 성장/가치 점수(quality)는 참고용으로 계산·표시만 하고 매도 우선순위 산정에서는 제외.
 
 정책 결정 (합의)
-  - 우선 '일 단위(horizon='D')'만 처리.
+  - 우선 '일 단위(horizon='Day')'만 처리.
   - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
     (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
      두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
@@ -544,7 +544,7 @@ def _make_strength_fn(ac, cache):
     return fn
 
 
-def run(nick, horizon="D", dry_run=False, force=False):
+def run(nick, horizon="Day", dry_run=False, force=False):
     """장마감 동시호가 시장비율 리밸런싱 실행."""
     conn = db.connect(conn_string)
     try:
@@ -588,7 +588,7 @@ def run(nick, horizon="D", dry_run=False, force=False):
             if ar.isOK():
                 out = ar.getBody().output
                 order_no = (out or {}).get("ODNO", "")
-                print(f"  ✅ 매도접수 {tag} ODNO={order_no}")
+                print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
                 record_sell(conn, acct_no, h, qty, h["current_price"], order_no, horizon)
             else:
                 print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
@@ -604,7 +604,7 @@ SIMUL_ACCT       = "SIMUL"          # trading_trail_simul.acct_no
 SIMUL_DLY_ACCT   = "74346047"     # dly_*_simul 의 acct (실제 값에 맞게 조정)
 
 
-def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
+def simulate_rebalance(sim_date, horizon="Day", strength_mode="neutral",
                        dly_acct=SIMUL_DLY_ACCT):
     """
     sim_date(YYYYMMDD) 종가 기준 리밸런싱을 시뮬레이션.
@@ -747,7 +747,7 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
         conn.close()
 
 
-def backtest(start_date, end_date, horizon="D", strength_mode="neutral"):
+def backtest(start_date, end_date, horizon="Day", strength_mode="neutral"):
     """기간 백테스트: 영업일마다 simulate_rebalance 반복. (prev_business_day_char 활용)"""
     conn = db.connect(conn_string)
     days = []
@@ -782,19 +782,19 @@ if __name__ == "__main__":
 
     pr = sub.add_parser("run", help="라이브 실행")
     pr.add_argument("--nick", required=True)
-    pr.add_argument("--horizon", default="D", choices=["D", "W", "M"])
+    pr.add_argument("--horizon", default="Day", choices=["Day", "Week", "Month"])
     pr.add_argument("--dry-run", action="store_true")
     pr.add_argument("--force", action="store_true", help="시간창 무시(테스트)")
 
     ps = sub.add_parser("sim", help="단일일 백테스트")
     ps.add_argument("--date", required=True, help="YYYYMMDD")
-    ps.add_argument("--horizon", default="D")
+    ps.add_argument("--horizon", default="Day")
     ps.add_argument("--strength", default="neutral", choices=["neutral", "pit"])
 
     pb = sub.add_parser("backtest", help="기간 백테스트")
     pb.add_argument("--start", required=True, help="YYYYMMDD")
     pb.add_argument("--end", required=True, help="YYYYMMDD")
-    pb.add_argument("--horizon", default="D")
+    pb.add_argument("--horizon", default="Day")
     pb.add_argument("--strength", default="neutral", choices=["neutral", "pit"])
 
     args = p.parse_args()
