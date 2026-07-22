@@ -1978,6 +1978,8 @@ def _analysis_history_invest_points(code: str) -> dict:
             result['risks']         = _extract_bracket_points(report or '', '리스크')
             if is_today == '2':
                 _enqueue_invest_analysis(code)
+        else:
+            _enqueue_invest_analysis(code)
     except Exception as e:
         print(f"[기업정보] analysis_history 조회 오류: {e}")
 
