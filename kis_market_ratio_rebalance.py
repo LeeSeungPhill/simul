@@ -19,7 +19,7 @@ kis_market_ratio_rebalance.py
   invest_point 성장/가치 점수(quality)는 참고용으로 계산·표시만 하고 매도 우선순위 산정에서는 제외.
 
 정책 결정 (합의)
-  - 우선 '일 단위(horizon='Day')'만 처리.
+  - 우선 '일 단위(horizon='D')'만 처리.
   - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
     (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
      두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
@@ -40,6 +40,8 @@ import json
 import math
 import argparse
 from datetime import datetime, timedelta, time as dtime, date
+import threading
+import pandas as pd
 
 import requests
 import psycopg2 as db
@@ -54,13 +56,14 @@ conn_string = "dbname='fund_risk_mng' host='192.168.50.81' port='5432' user='pos
 # 리밸런싱 가중치 (튜닝 포인트)
 W_SUPPLY      = 0.5    # strength = W_SUPPLY*수급
 W_CHART       = 0.5    # strength = W_CHART*차트 
-TOP_CUT       = 70     # sell_priority(100 - strength) 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 50%
+TOP_CUT       = 70     # sell_priority(100 - strength) 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 70%
 PER_NAME_CAP  = 0.5    # 종목당 1일 최대 매도 비중 (평가금액 대비)
 
 REBAL_WINDOW  = (dtime(15, 18), dtime(15, 29))   # 동시호가 접수 창
 
 requests.packages.urllib3.disable_warnings()     # verify=False 경고 억제
-
+_daily_cache_lock = threading.Lock()
+_prev_day_info_cache = {} 
 
 # ────────────────────────────────────────────────────────────────────────────
 # KIS 함수 (kis_holding_item_total.py 에서 복제 — import 시 부작용 방지)
@@ -133,6 +136,107 @@ def order_cash(buy_flag, access_token, app_key, app_secret, acct_no, stock_code,
                         data=json.dumps(params), verify=False, timeout=10)
     ar = resp.APIResp(res)
     return ar  # 호출부에서 isOK()/output 판단
+
+def get_previous_business_day(day, conn):
+    cur100 = conn.cursor()
+    cur100.execute("select prev_business_day_char(%s)", (day,))
+    result_one00 = cur100.fetchall()
+    cur100.close()
+
+    return result_one00[0][0]
+
+def get_prev_day_info(stock_code, trade_date, access_token, app_key, app_secret, conn):
+    cache_key = (stock_code, trade_date)
+    with _daily_cache_lock:
+        if cache_key in _prev_day_info_cache:
+            return _prev_day_info_cache[cache_key]
+        
+    prev_date = get_previous_business_day((datetime.strptime(trade_date, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d"), conn)
+
+    result = get_kis_daily_chart(
+        stock_code=stock_code,
+        trade_date=prev_date,
+        access_token=access_token,
+        app_key=app_key,
+        app_secret=app_secret
+    )
+
+    if result is not None:
+        with _daily_cache_lock:
+            _prev_day_info_cache[cache_key] = result
+
+    return result  
+
+def get_kis_daily_chart(
+        stock_code: str,
+        trade_date: str,
+        access_token: str,
+        app_key: str,
+        app_secret: str,
+        market_code: str = "J",           # J:KRX, NX:NXT, UN:통합
+        period: str = "D",                # D:최근30거래일, W:최근30주, M:최근30개월
+        adjust_price: str = "1",          # 0:수정주가미반영, 1:수정주가반영
+        verbose: bool = True              # 출력 제어 옵션
+    ):
+    url = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+
+    headers = {
+        "Content-Type": "application/json",
+        "authorization": f"Bearer {access_token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "FHKST01010400",
+        "custtype": "P"
+    }
+
+    params = {
+        "FID_COND_MRKT_DIV_CODE": market_code,
+        "FID_INPUT_ISCD": stock_code,
+        "FID_PERIOD_DIV_CODE": period,
+        "FID_ORG_ADJ_PRC": adjust_price,
+    }
+
+    for attempt in range(3):
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+            if data.get('rt_cd') == '1' and attempt < 2:
+                time.sleep(1)
+                continue
+            break
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+            else:    
+                if verbose:
+                    print(f"\n⚠️ 일봉 조회 실패 ({stock_code}): {e}")
+                return None
+
+    if "output" not in data or not data["output"]:
+        if verbose:
+            print(f"⛔ 일봉 데이터 없음 ({stock_code}) rt_cd={data.get('rt_cd')}, msg={data.get('msg1', '')}")
+        return None
+
+    df = pd.DataFrame(data["output"])
+    if df.empty:
+        return None
+
+    # 날짜 필터 (YYYYMMDD)
+    day_df = df[df["stck_bsop_date"] == trade_date]
+
+    if day_df.empty:
+        if verbose:
+            print(f"⛔ {trade_date} 일봉 없음")
+        return None
+
+    result = {
+        "low_price": int(day_df.iloc[0]["stck_lwpr"]),
+        "high_price": int(day_df.iloc[0]["stck_hgpr"]),
+        "close_price": int(day_df.iloc[0]["stck_clpr"]),
+        "volume": int(day_df.iloc[0]["acml_vol"]),
+    }
+
+    return result
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -412,26 +516,63 @@ def load_fund_signals(conn, acct_no):
     return cash, sig, mr
 
 
-def load_holdings(conn, acct_no):
-    """트레이딩 종목(trading_plan NOT IN ('i')) 조회. 'h' 포함(정책 결정)."""
+def load_holdings(conn, acct_no, access_token, app_key, app_secret):
+    """trading_plan == 'h', trail_tp = 'L' 대상"""
     cur = conn.cursor()
     cur.execute("""
-        SELECT code, name, current_price, eval_sum, purchase_price,
-               COALESCE(avail_amount, purchase_amount, 0) AS avail_qty,
-               COALESCE(NULLIF(trading_plan,''), 'as') AS trading_plan
-        FROM "stockBalance_stock_balance"
-        WHERE acct_no = %s AND proc_yn = 'Y'
-          AND (trading_plan IS NULL OR trading_plan NOT IN ('i'))
-          AND COALESCE(eval_sum, 0) > 0
-    """, (str(acct_no),))
+        SELECT 
+            A.code, 
+            A.name, 
+            A.current_price, 
+            A.eval_sum, 
+            A.purchase_price,
+            COALESCE(A.avail_amount, A.purchase_amount, 0) AS avail_qty
+        FROM "stockBalance_stock_balance" A RIGHT OUTER JOIN 
+            (
+                SELECT code, name
+                FROM "stockBalance_stock_balance"  
+                WHERE acct_no = %s
+                AND proc_yn = 'Y'
+                AND trading_plan = 'h'
+                AND COALESCE(eval_sum, 0) > 0
+                UNION
+                SELECT code, name
+                FROM trading_trail
+                WHERE acct_no = %s
+                AND trail_day = prev_business_day_char(CURRENT_DATE)
+                AND COALESCE(basic_qty, 0) > 0
+                AND trail_tp = 'L'
+            ) B ON A.code = B.code             
+        WHERE acct_no = %s 
+        AND proc_yn = 'Y'
+        AND COALESCE(eval_sum, 0) > 0
+    """, (str(acct_no),str(acct_no),str(acct_no),))
     rows = cur.fetchall()
     cur.close()
     out = []
-    for code, name, cur_p, eval_sum, pur_p, avail, plan in rows:
-        out.append({"code": code, "name": name,
-                    "current_price": int(cur_p or 0), "eval_sum": int(eval_sum or 0),
-                    "purchase_price": int(float(pur_p or 0)),
-                    "avail_qty": int(avail or 0), "trading_plan": plan})
+    for code, name, cur_p, eval_sum, pur_p, avail in rows:
+
+        prev_day_info = get_prev_day_info(
+            code,
+            datetime.now().strftime("%Y%m%d"),
+            access_token,
+            app_key,
+            app_secret,
+            conn
+        )
+
+        if prev_day_info is None:
+            print(f"[{name}-{code}] 전일 일봉 데이터 미존재")
+            continue
+
+        prev_low = prev_day_info['low_price']
+
+        # 전일 저가 현재가 이탈시
+        if prev_low > int(cur_p or 0):
+            out.append({"code": code, "name": name, "prev_low_price" : prev_low,
+                        "current_price": int(cur_p or 0), "eval_sum": int(eval_sum or 0),
+                        "purchase_price": int(float(pur_p or 0)),
+                        "avail_qty": int(avail or 0)})
     return out
 
 
@@ -495,19 +636,50 @@ def record_sell(conn, acct_no, h, qty, est_price, order_no, horizon):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO trading_trail (
-                acct_no, code, name, trail_day, trail_dtm, trail_tp,
-                stop_price, target_price, trail_plan,
-                basic_price, basic_qty, basic_amt,
-                proc_min, trade_tp, exit_price, loss_amt,
-                trail_price, trail_qty, trail_amt, trail_rate, trade_result,
-                order_no, crt_dt, mod_dt
-            ) VALUES (%s,%s,%s,%s,%s,'4', 0,0,%s, %s,%s,%s, %s,'M', 0,%s,
-                      %s,%s,%s,%s,%s, %s,%s,%s)
-        """, (acct_no, h["code"], h["name"], yd, hms,
-              str(int(qty)), basic_price, qty, basic_price * qty,
-              hms, loss_amt,
-              est_price, qty, trail_amt, trail_rate, f"시장비율 리밸런싱 매도({horizon})",
-              str(order_no or ""), now, now))
+                acct_no,
+                code, 
+                name, 
+                trail_day, 
+                trail_dtm, 
+                trail_tp,
+                stop_price, 
+                target_price, 
+                trail_plan,
+                basic_price, 
+                basic_qty, 
+                basic_amt,
+                proc_min, 
+                trade_tp, 
+                exit_price, 
+                loss_amt,
+                trail_price, 
+                trail_qty, 
+                trail_amt, 
+                trail_rate, 
+                trade_result,
+                order_no, 
+                crt_dt, 
+                mod_dt
+            ) VALUES (%s,%s,%s,%s,%s,'4',0,0,%s,%s,%s,%s,%s,'M',0,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (acct_no, 
+              h["code"], 
+              h["name"], 
+              yd, 
+              hms,
+              str(int(qty)), 
+              basic_price, 
+              qty, 
+              basic_price * qty,
+              hms, 
+              loss_amt,
+              est_price, 
+              qty, 
+              trail_amt, 
+              trail_rate, 
+              f"시장비율 리밸런싱 매도({horizon})",
+              str(order_no or ""), 
+              now, 
+              now))
         conn.commit()
         cur.close()
     except Exception as e:
@@ -544,7 +716,7 @@ def _make_strength_fn(ac, cache):
     return fn
 
 
-def run(nick, horizon="Day", dry_run=False, force=False):
+def run(nick, horizon="D", dry_run=False, force=False):
     """장마감 동시호가 시장비율 리밸런싱 실행."""
     conn = db.connect(conn_string)
     try:
@@ -554,12 +726,15 @@ def run(nick, horizon="Day", dry_run=False, force=False):
             return
 
         ac = account(nick, conn)
-        acct_no = ac["acct_no"]
+        acct_no      = ac['acct_no']
+        access_token = ac['access_token']
+        app_key      = ac['app_key']
+        app_secret   = ac['app_secret']
 
         cash, _sig, mr = load_fund_signals(conn, acct_no)
-        holdings = load_holdings(conn, acct_no)
+        holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         if not holdings:
-            print(f"[{nick}] 트레이딩 보유 없음 → 스킵")
+            print(f"[{nick}] 홀딩 대상 없음 → 스킵")
             return
 
         cache = {}
@@ -570,13 +745,13 @@ def run(nick, horizon="Day", dry_run=False, force=False):
 
         orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
 
-        print(f"[{nick}] cash={cash:,} market_ratio={mr} "
+        print(f"[{nick}] 리밸런싱 cash={cash:,} market_ratio={mr} "
               f"초과={excess:,} 매도후보={len(orders)}건")
 
         for h, qty in orders:
-            if has_pending_sell(conn, acct_no, h["code"]):
-                print(f"  · {h['name']}[{h['code']}] 활성 추적 존재 → 매도 스킵")
-                continue
+            # if has_pending_sell(conn, acct_no, h["code"]):
+            #     print(f"  · {h['name']}[{h['code']}] 활성 추적 존재 → 매도 스킵")
+            #     continue
             tag = (f"{h['name']}[{h['code']}] {qty}주 "
                    f"(strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
                    f"priority={h.get('sell_priority',0):.0f}) 예상 {h['current_price']*qty:,}원")
@@ -588,7 +763,7 @@ def run(nick, horizon="Day", dry_run=False, force=False):
             if ar.isOK():
                 out = ar.getBody().output
                 order_no = (out or {}).get("ODNO", "")
-                print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
+                print(f"  ✅ 매도접수 {tag} ODNO={order_no}")
                 record_sell(conn, acct_no, h, qty, h["current_price"], order_no, horizon)
             else:
                 print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
@@ -601,10 +776,10 @@ def run(nick, horizon="Day", dry_run=False, force=False):
 # 백테스트 훅 (kis_trading_set_simul 계열 테이블 기반)
 # ────────────────────────────────────────────────────────────────────────────
 SIMUL_ACCT       = "SIMUL"          # trading_trail_simul.acct_no
-SIMUL_DLY_ACCT   = "74346047"     # dly_*_simul 의 acct (실제 값에 맞게 조정)
+SIMUL_DLY_ACCT   = "74346047"       # dly_*_simul 의 acct (실제 값에 맞게 조정)
+TOTAL_INVEST_BASE = 25_000_000      # 전체투자금 기준 (원)
 
-
-def simulate_rebalance(sim_date, horizon="Day", strength_mode="neutral",
+def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
                        dly_acct=SIMUL_DLY_ACCT):
     """
     sim_date(YYYYMMDD) 종가 기준 리밸런싱을 시뮬레이션.
@@ -617,14 +792,26 @@ def simulate_rebalance(sim_date, horizon="Day", strength_mode="neutral",
     dly_acct_balance_simul 재집계는 기존 simul 스크립트가 담당.
     """
     conn = db.connect(conn_string)
+    phiils2_account = account("phills2", conn)
+
     try:
         cur = conn.cursor()
         # 1) 보유 포지션
         cur.execute("""
-            SELECT code, name, balance_price, balance_qty, balance_amt, value_amt
-            FROM public.dly_trading_balance_simul
-            WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y' AND balance_qty > 0
-        """, (dly_acct, sim_date))
+            SELECT A.code, A.name, A.balance_price, A.balance_qty, A.balance_amt, A.value_amt
+            FROM public.dly_trading_balance_simul A, 
+            (
+                SELECT code, name
+                FROM  public.trading_trail_simul
+                WHERE acct_no = %s
+                AND trading_plan = 'h'
+                AND trail_tp = 'L'
+                AND COALESCE(basic_qty, 0) > 0
+                AND trail_day = %s
+            ) B 
+            WHERE A.code = B.code
+            AND A.acct_no = %s AND A.balance_day = %s AND A.use_yn = 'Y' AND A.balance_qty > 0
+        """, (SIMUL_ACCT, sim_date, dly_acct, sim_date))
         rows = cur.fetchall()
         if not rows:
             print(f"[SIMUL {sim_date}] 보유 없음 → 스킵")
@@ -632,122 +819,171 @@ def simulate_rebalance(sim_date, horizon="Day", strength_mode="neutral",
 
         holdings = []
         for code, name, bprice, bqty, bamt, vamt in rows:
+            prev_day_info = get_prev_day_info(
+                code,
+                sim_date,
+                phiils2_account["access_token"],
+                phiils2_account["app_key"], 
+                phiils2_account["app_secret"],
+                conn
+            )
+
+            if prev_day_info is None:
+                print(f"[{name}-{code}] 전일 일봉 데이터 미존재")
+                continue
+
+            prev_low = prev_day_info['low_price']
+
             bqty = int(bqty or 0)
             eval_sum = int(bamt or 0) + int(vamt or 0)              # 평가금액 = 보유금액 + 수익금액
             cur_price = int(round(eval_sum / bqty)) if bqty else 0  # 종가 근사
-            holdings.append({"code": code, "name": name or code,
-                             "current_price": cur_price, "eval_sum": eval_sum,
-                             "purchase_price": int(float(bprice or 0)),
-                             "avail_qty": bqty})
 
-        # 2) 현금 (sim_date 시점 예수금)
-        cur.execute("""
-            SELECT prvs_excc_amt FROM dly_acct_balance_simul
-            WHERE acct = %s AND dt = %s ORDER BY last_chg_date DESC LIMIT 1
-        """, (dly_acct, sim_date))
-        cr = cur.fetchone()
-        cash = int(cr[0]) if cr and cr[0] is not None else 0
+            # 전일 저가 현재가 이탈시
+            if prev_low > int(cur_price or 0):
+                holdings.append({"code": code, "name": name or code,
+                                "current_price": cur_price, "eval_sum": eval_sum,
+                                "purchase_price": int(float(bprice or 0)),
+                                "avail_qty": bqty})
 
-        # 3) 그 날의 시장비율 (실제 dly_acct_balance)
-        cur.execute("""
-            SELECT market_ratio
-            FROM dly_acct_balance WHERE dt = %s
-            ORDER BY last_chg_date DESC NULLS LAST LIMIT 1
-        """, (sim_date,))
-        sr = cur.fetchone()
-        if not sr:
-            print(f"[SIMUL {sim_date}] dly_acct_balance 신호 없음 → 스킵")
-            return {"date": sim_date, "orders": []}
-        mr = sr[0]
-        cur.close()
+        if len(holdings) > 0:
+            # 2) 현금 (sim_date 시점 예수금)
+            prev_date = get_previous_business_day(
+                (datetime.strptime(sim_date, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d"), conn
+            )
+            
+            cur.execute("""
+                SELECT 
+                    prvs_excc_amt, 
+                    pchs_amt, 
+                    (
+                        SELECT SUM(balance_amt)
+                        FROM public.dly_trading_balance_simul
+                        WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y'
+                    ),
+                    (
+                        SELECT COALESCE(SUM((trail_price - basic_price)*trail_qty), 0)
+                        FROM trading_trail_simul
+                        WHERE acct_no = 'SIMUL' AND trail_day = %s
+                        AND trail_tp IN ('3','4')
+                        AND trail_price > 0 AND trail_qty > 0
+                    )
+                FROM dly_acct_balance_simul
+                WHERE acct = %s AND dt < %s ORDER BY dt DESC LIMIT 1
+            """, (dly_acct, sim_date, sim_date, dly_acct, prev_date))
+            pt_row                  = cur.fetchone()
+            prev_excc               = int(pt_row[0]) if pt_row else None
+            prev_pchs               = int(pt_row[1]) if pt_row else 0
+            pchs_amt                = int(pt_row[2]) if pt_row else 0
+            total_profit_loss_amt   = int(pt_row[3]) if pt_row else 0
 
-        # 4) 점수 함수 (point-in-time)
-        def quality_fn(code):
-            return quality_score_from_history(conn, code, as_of=sim_date)
+            # 자본기준: dly_acct_balance_simul 의 prev_excc(전일 예수금) 사용 (없으면 TOTAL_INVEST_BASE 폴백)
+            base_capital  = prev_excc if prev_excc is not None else TOTAL_INVEST_BASE
+            # 예수금 = 전일 예수금 - 매수총액 + 전일 매수총액 + 실현손익
+            cash = base_capital - pchs_amt + prev_pchs + total_profit_loss_amt
 
-        def strength_fn(code):
-            if strength_mode == "pit":
-                # TODO: 로컬 일봉 이력 테이블에서 sim_date 이하로 잘라 _calc_*_score 계산.
-                #       현재 라이브는 KIS 현재가 API(당일)라 PIT 백테스트 불가 → 이력 테이블 필요.
-                return 50.0
-            return 50.0  # neutral: 기준①을 백테스트에서 중립 처리(순위는 기준③이 좌우)
+            # 3) 그 날의 시장비율 (실제 dly_acct_balance)
+            cur.execute("""
+                SELECT market_ratio
+                FROM dly_acct_balance WHERE dt = %s
+                ORDER BY last_chg_date DESC NULLS LAST LIMIT 1
+            """, (sim_date,))
+            sr = cur.fetchone()
+            if not sr:
+                print(f"[SIMUL {sim_date}] dly_acct_balance 신호 없음 → 스킵")
+                return {"date": sim_date, "orders": []}
+            mr = sr[0]
+            cur.close()
 
-        # 5) 주문 산출
-        orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
+            # 4) 점수 함수 (point-in-time)
+            def quality_fn(code):
+                return quality_score_from_history(conn, code, as_of=sim_date)
 
-        print(f"[SIMUL {sim_date}] cash={cash:,} mr={mr} "
-              f"초과={excess:,} 매도={len(orders)}건")
+            cache = {}
+            strength_fn = _make_strength_fn(phiils2_account, cache)
 
-        # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
-        #    (simul_server.py /api/sell · _do_simul_sell_update 와 동일 패턴: INSERT 아님)
-        applied = []
-        for h, qty in orders:
-            sell_price = h["current_price"]
-            cur2 = conn.cursor()
-            cur2.execute("""
-                SELECT basic_price, basic_qty, trail_dtm, trail_tp
-                FROM trading_trail_simul
-                WHERE acct_no = %s AND trail_day = %s AND code = %s
-                  AND trail_tp IN ('1','2','3','L','P')
-                ORDER BY trail_dtm DESC LIMIT 1
-            """, (SIMUL_ACCT, sim_date, h["code"]))
-            row = cur2.fetchone()
-            if not row:
-                print(f"  ⚠ {h['name']}[{h['code']}] 활성 trading_trail_simul 행 없음 → 매도 스킵")
+            # 5) 주문 산출
+            orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
+
+            print(f"[SIMUL {sim_date}] 리밸런싱 cash={cash:,} mr={mr} "
+                            f"초과={excess:,} 매도={len(orders)}건")
+
+            # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
+            #    (simul_server.py /api/sell · _do_simul_sell_update 와 동일 패턴: INSERT 아님)
+            applied = []
+            for h, qty in orders:
+                sell_price = h["current_price"]
+                cur2 = conn.cursor()
+                cur2.execute("""
+                    SELECT basic_price, basic_qty, trail_dtm, trail_tp
+                    FROM trading_trail_simul
+                    WHERE acct_no = %s AND trail_day = %s AND code = %s
+                    AND trail_tp IN ('1','2','L','P')
+                    ORDER BY trail_dtm DESC LIMIT 1
+                """, (SIMUL_ACCT, sim_date, h["code"]))
+                row = cur2.fetchone()
+                if not row:
+                    print(f"  ⚠ {h['name']}[{h['code']}] 활성 trading_trail_simul 행 없음 → 매도 스킵")
+                    cur2.close()
+                    continue
+                basic_price, basic_qty, trail_dtm, cur_trail_tp = int(row[0]), int(row[1]), row[2], row[3]
+                remaining_qty = basic_qty - qty
+                new_trail_tp  = '4' if remaining_qty <= 0 else '3'
+                new_basic_amt = basic_price * remaining_qty
+                trail_rate    = round((sell_price - basic_price) / basic_price * 100, 2) if basic_price else 0.0
+                pnl = int((sell_price - basic_price) * qty)
+
+                cur2.execute("""
+                    UPDATE trading_trail_simul SET
+                        trail_price  = %s,
+                        trail_qty    = %s,
+                        trail_amt    = %s,
+                        trail_rate   = %s,
+                        trail_tp     = %s,
+                        proc_min     = %s,
+                        basic_qty    = %s,
+                        basic_amt    = %s,
+                        trade_result = %s,
+                        mod_dt       = %s
+                    WHERE acct_no = %s AND code = %s
+                    AND trail_day = %s AND trail_dtm = %s
+                    AND trail_tp IN ('1','2','L','P')
+                """, (
+                    sell_price, qty, sell_price * qty, trail_rate,
+                    new_trail_tp, "152900",
+                    remaining_qty, new_basic_amt,
+                    f"시장비율 리밸런싱({horizon})", datetime.now(),
+                    SIMUL_ACCT, h["code"], sim_date, trail_dtm,
+                ))
+                cur2.execute("""
+                    UPDATE dly_trading_balance_simul
+                    SET balance_qty = balance_qty - %s,
+                        balance_amt = GREATEST(balance_amt - %s, 0),
+                        value_amt = %s,
+                        sell_qty = %s     
+                    WHERE acct_no = %s AND balance_day = %s AND code = %s
+                """, (qty, basic_price * qty, pnl, qty, dly_acct, sim_date, h["code"]))
+                conn.commit()
                 cur2.close()
-                continue
-            basic_price, basic_qty, trail_dtm, cur_trail_tp = int(row[0]), int(row[1]), row[2], row[3]
-            remaining_qty = basic_qty - qty
-            new_trail_tp  = '4' if remaining_qty <= 0 else '3'
-            new_basic_amt = basic_price * remaining_qty
-            trail_rate    = round((sell_price - basic_price) / basic_price * 100, 2) if basic_price else 0.0
-            pnl = int((sell_price - basic_price) * qty)
+                applied.append({"code": h["code"], "qty": qty, "sell_price": sell_price, "pnl": pnl})
+                print(f"  · 매도 {h['name']}[{h['code']}] {qty}주 @ {sell_price:,} 손익 {pnl:,} "
+                    f"(strength={h.get('strength',0):.0f}, (quality={h.get('quality',0):.0f},  priority={h.get('sell_priority',0):.0f}) 예상 {sell_price*qty:,}원)")
 
-            cur2.execute("""
-                UPDATE trading_trail_simul SET
-                    trail_price  = %s,
-                    trail_qty    = %s,
-                    trail_amt    = %s,
-                    trail_rate   = %s,
-                    trail_tp     = %s,
-                    proc_min     = %s,
-                    basic_qty    = %s,
-                    basic_amt    = %s,
-                    trade_result = %s,
-                    mod_dt       = %s
-                WHERE acct_no = %s AND code = %s
-                  AND trail_day = %s AND trail_dtm = %s
-                  AND trail_tp IN ('1','2','3','L','P')
-            """, (
-                sell_price, qty, sell_price * qty, trail_rate,
-                new_trail_tp, "152900",
-                remaining_qty, new_basic_amt,
-                f"시장비율 리밸런싱({horizon})", datetime.now(),
-                SIMUL_ACCT, h["code"], sim_date, trail_dtm,
-            ))
-            cur2.execute("""
-                UPDATE dly_trading_balance_simul
-                SET balance_qty = balance_qty - %s,
-                    balance_amt = GREATEST(balance_amt - %s, 0),
-                    value_amt = %s,
-                    sell_qty = %s     
-                WHERE acct_no = %s AND balance_day = %s AND code = %s
-            """, (qty, basic_price * qty, pnl, qty, dly_acct, sim_date, h["code"]))
-            conn.commit()
-            cur2.close()
-            applied.append({"code": h["code"], "qty": qty, "sell_price": sell_price, "pnl": pnl})
-            print(f"  · 매도 {h['name']}[{h['code']}] {qty}주 @ {sell_price:,} 손익 {pnl:,} "
-                  f"(quality={h.get('quality',0):.0f}, trail_tp {cur_trail_tp}→{new_trail_tp})")
+            return {"date": sim_date, "market_ratio": mr,
+                    "excess": excess,
+                    "orders": applied,
+                    "realized_pnl": sum(a["pnl"] for a in applied)}
 
-        return {"date": sim_date, "market_ratio": mr,
-                "excess": excess,
-                "orders": applied,
-                "realized_pnl": sum(a["pnl"] for a in applied)}
+        else:
+            return {"date": sim_date, "market_ratio": "",
+                            "excess": "",
+                            "orders": "",
+                            "realized_pnl": ""}
+        
     finally:
         conn.close()
 
 
-def backtest(start_date, end_date, horizon="Day", strength_mode="neutral"):
+def backtest(start_date, end_date, horizon="D", strength_mode="neutral"):
     """기간 백테스트: 영업일마다 simulate_rebalance 반복. (prev_business_day_char 활용)"""
     conn = db.connect(conn_string)
     days = []
@@ -782,19 +1018,19 @@ if __name__ == "__main__":
 
     pr = sub.add_parser("run", help="라이브 실행")
     pr.add_argument("--nick", required=True)
-    pr.add_argument("--horizon", default="Day", choices=["Day", "Week", "Month"])
+    pr.add_argument("--horizon", default="D", choices=["D", "W", "M"])
     pr.add_argument("--dry-run", action="store_true")
     pr.add_argument("--force", action="store_true", help="시간창 무시(테스트)")
 
     ps = sub.add_parser("sim", help="단일일 백테스트")
     ps.add_argument("--date", required=True, help="YYYYMMDD")
-    ps.add_argument("--horizon", default="Day")
+    ps.add_argument("--horizon", default="D")
     ps.add_argument("--strength", default="neutral", choices=["neutral", "pit"])
 
     pb = sub.add_parser("backtest", help="기간 백테스트")
     pb.add_argument("--start", required=True, help="YYYYMMDD")
     pb.add_argument("--end", required=True, help="YYYYMMDD")
-    pb.add_argument("--horizon", default="Day")
+    pb.add_argument("--horizon", default="D")
     pb.add_argument("--strength", default="neutral", choices=["neutral", "pit"])
 
     args = p.parse_args()

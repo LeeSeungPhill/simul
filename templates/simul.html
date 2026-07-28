@@ -1383,6 +1383,7 @@
         <b>{{ selectedStock.name }}</b>
         <span class="ssi-code">({{ selectedStock.code }})</span>
         <span class="ssi-trail-tp">{{ trailTpLabel(selectedStock.trail_tp) }}</span>
+        <span class="ssi-trail-tp">{{ tradingPlanLabel(selectedStock.trading_plan) }}</span>
       </div>
       <div class="ssi-grid">
         <div class="ssi-item">
@@ -1472,6 +1473,14 @@
             <span v-if="trailEditBasicAmt !== null">매수금액: <b>{{ fmt(trailEditBasicAmt) }} 원</b></span>
             <span v-if="trailEditLossAmt !== null">손실금액: <b style="color:#e63946">{{ fmt(trailEditLossAmt) }} 원</b></span>
           </div>
+        </div>
+        <div class="field full">
+          <label>매매계획</label>
+          <select v-model="trailEdit.trading_plan">
+            <option value="h">홀딩</option>
+            <option value="i">투자</option>
+            <option value="n">빈값</option>
+          </select>
         </div>
       </div>
       <div class="btn-row">
@@ -1676,7 +1685,9 @@ createApp({
     const CHANGE_LABELS = {
       stop_price: '이탈가', target_price: '목표가', exit_price: '최종이탈가',
       basic_price: '매수단가', basic_qty: '매수량', trail_tp: '추적유형', proc_min: '처리시간',
+      trading_plan: '매매계획',
     };
+    const TRADING_PLAN_LABEL = { h: '홀딩', i: '투자', '': '빈값' };
 
     const stockScores        = ref(null);
     const stockScoresLoading = ref(false);
@@ -1773,6 +1784,8 @@ createApp({
       trailEdit.value.basic_price  = null;
       trailEdit.value.basic_qty    = null;
       trailEdit.value.proc_min     = '';
+      trailEdit.value.trading_plan = s.trading_plan || '';
+      trailEdit.value._origTradingPlan = s.trading_plan || '';
     }
 
     const canSellCalc = computed(() =>
@@ -1861,6 +1874,7 @@ createApp({
       change_date: today, code: '', name: '', proc_min: '',
       stop_price: null, target_price: null, exit_price: null,
       basic_price: null, basic_qty: null, trail_tp: '',
+      trading_plan: '', _origTradingPlan: '',
     });
     const trailEditLookingUp = ref(false);
 
@@ -1978,6 +1992,7 @@ createApp({
 
     const TRAIL_TP = { '1': '추적대기', '2': '추적중', '3': '안전마진', 'L': '장기보유', 'P': '추적멈춤', '4': '완전매도' };
     function trailTpLabel(tp) { return TRAIL_TP[tp] || tp || '-'; }
+    function tradingPlanLabel(v) { return TRADING_PLAN_LABEL[v || ''] ?? '-'; }
 
     async function calculate() {
       if (!canCalc.value) return;
@@ -2106,19 +2121,29 @@ createApp({
       const codeVal = (trailEdit.value.code || '').trim();
       if (!codeVal) { showAlert('종목코드를 입력해주세요.'); return; }
       if (!/^\d{6}$/.test(codeVal)) { showAlert('종목코드가 유효하지 않습니다. 종목명 입력 후 자동조회가 되지 않은 경우 코드를 직접 입력해주세요.'); return; }
+      // 매매계획(trading_plan)은 빈값도 유효한 선택이라 다른 필드와 같은 방식으로 판단할 수 없어
+      // 종목 선택 시 저장해둔 원래값과 비교해 실제로 바뀌었는지 별도로 확인한다.
       const SET_KEYS = ['stop_price', 'target_price', 'exit_price', 'basic_price', 'basic_qty', 'trail_tp', 'proc_min'];
-      const hasSetField = SET_KEYS.some(k => { const v = trailEdit.value[k]; return v !== null && v !== '' && v !== 0; });
+      const tradingPlanChanged = trailEdit.value.trading_plan !== (trailEdit.value._origTradingPlan || '');
+      const hasSetField = tradingPlanChanged
+        || SET_KEYS.some(k => { const v = trailEdit.value[k]; return v !== null && v !== '' && v !== 0; });
       if (!hasSetField) { showAlert('변경할 값을 하나 이상 입력해주세요.'); return; }
-      const body = {};
+      const body = { trading_plan: trailEdit.value.trading_plan || '' };
       for (const [k, v] of Object.entries(trailEdit.value)) {
-        if (k === 'name') continue;
+        if (k === 'name' || k === 'trading_plan' || k === '_origTradingPlan') continue;
         if (v !== null && v !== '' && v !== 0) body[k] = v;
       }
       const fieldStr = Object.entries(CHANGE_LABELS)
-        .filter(([k]) => { const v = trailEdit.value[k]; return v !== null && v !== '' && v !== 0; })
+        .filter(([k]) => {
+          if (k === 'trading_plan') return true;
+          const v = trailEdit.value[k];
+          return v !== null && v !== '' && v !== 0;
+        })
         .map(([k, lbl]) => {
           const v = trailEdit.value[k];
-          return lbl + ': ' + (k === 'trail_tp' ? trailTpLabel(v) : (typeof v === 'number' ? v.toLocaleString('ko-KR') : v));
+          if (k === 'trail_tp') return lbl + ': ' + trailTpLabel(v);
+          if (k === 'trading_plan') return lbl + ': ' + tradingPlanLabel(v);
+          return lbl + ': ' + (typeof v === 'number' ? v.toLocaleString('ko-KR') : v);
         }).join(' | ');
       const logEntry = {
         time: new Date().toLocaleTimeString('ko-KR'),
@@ -2266,7 +2291,7 @@ createApp({
       loadActiveStocks, selectActiveStock,
       lookupSellName, calculateSell, executeSell,
       useLossAmt,
-      canCalc, lookupName, trailEditLookup, trailTpLabel,
+      canCalc, lookupName, trailEditLookup, trailTpLabel, tradingPlanLabel,
       sizeClass, fetchStockInfo, loadDashboard,
       calculate, save, loadList, deleteRecord, resetForm,
       runSet, runTrail, updateTrail, fmt, fmtDay,

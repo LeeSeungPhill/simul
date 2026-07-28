@@ -22,8 +22,13 @@ import kis_api_resp as resp
 # ─────────────────────────────────────────
 SIMUL_TABLE       = "public.trading_trail_simul"
 SIMUL_ACCT        = "SIMUL"
+SIMUL_DLY_ACCT    = "74346047"         # dly_*_simul 의 acct
 API_NICK          = "phills2"          # 시장 데이터(분봉·일봉) 조회에만 사용하는 계좌
 TOTAL_INVEST_BASE = 25_000_000         # 전체투자금 기준 (원)
+# 시장비율 리밸런싱(kis_market_ratio_rebalance.py simulate_rebalance 복제) 튜닝 포인트
+TOP_CUT      = 70    # sell_priority(100 - strength) 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 70%
+PER_NAME_CAP = 0.5    # 종목당 1일 최대 매도 비중 (평가금액 대비)
+W_CHART       = 0.5    # strength = W_CHART*차트 
 
 BASE_URL    = "https://openapi.koreainvestment.com:9443"
 conn_string = "dbname='fund_risk_mng' host='192.168.50.81' port='5432' user='postgres' password='asdf1234'"
@@ -1568,6 +1573,430 @@ def _sync_market_trend_to_simul(trade_date: str, conn, prev_tot_evlu_amt=None):
 
 
 # ─────────────────────────────────────────
+# 시장비율 기반 리밸런싱 시뮬레이션
+# (kis_market_ratio_rebalance.py simulate_rebalance 및 의존 로직 복제 —
+#  process_account_simul 과 같은 프로세스에서 동일 수행일자(today)로 동시 처리하기 위함.
+#  kis_holding_item_total.py 를 import 하지 않는 kis_market_ratio_rebalance.py 와
+#  동일한 이유로, 필요한 로직을 여기에도 복제한다)
+# ─────────────────────────────────────────
+def total_excess(cash, total_eval, market_ratio):
+    """base = 현금 + 전체 평가금액, target = base*market_ratio/100, excess = 평가금액-target(>0 이면 매도).
+    KOSPI/KOSDAQ 구분 없이 트레이딩풀 전체를 대상으로 한 단일 초과분(원)."""
+    if market_ratio is None or total_eval <= 0:
+        return 0
+    base = total_eval + cash
+    return int(max(0, total_eval - base * market_ratio / 100))
+
+
+def sell_priority(strength):
+    """수급 또는 차트 strength 약할수록(낮을수록) 우선순위 높음.
+    invest_point(quality, 성장/가치 점수)는 매도 우선순위 산정에서 제외(참고용 표시만 유지)."""
+    return 100 - strength
+
+
+def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty"):
+    """bucket: sell_priority 계산된 holding dict 리스트. excess 만큼 순위 충전식 배분.
+    각 holding dict 는 'sell_priority','eval_sum',cur_price_key,avail_key 를 가진다.
+    반환: [(holding, qty), ...]"""
+    ranked = sorted(bucket, key=lambda h: -h["sell_priority"])
+    orders, filled = [], 0
+    for h in ranked:
+        if filled >= excess:
+            break
+        cur = h[cur_price_key]
+        avail = int(h.get(avail_key, 0) or 0)
+        if cur <= 0 or avail <= 0:
+            continue
+        # 매도 할당 금액 : 수급 또는 차트 strength > 70 이면 전체 물량, 아니면 절반 물량
+        cap_amt = h["eval_sum"] if h["sell_priority"] >= TOP_CUT else h["eval_sum"] * PER_NAME_CAP
+        # 시장비율 초과하여 감축할 금액(cap_amt 와 초과한 물량에서 차감한 물량 중 최소 금액)
+        amt = min(cap_amt, excess - filled)
+        qty = int(amt // cur)
+        qty = min(qty, avail)
+        if qty > 0:
+            orders.append((h, qty))
+            filled += qty * cur
+    return orders
+
+
+def build_rebalance_orders(holdings, cash, market_ratio, strength_fn, quality_fn):
+    """코어 엔진. holdings 각 dict: code,name,eval_sum,current_price,avail_qty,purchase_price.
+    strength_fn(code)->0~100, quality_fn(code)->0~100 주입.
+    quality(invest_point)는 참고용으로 h['quality']에 기록만 하고 sell_priority 산정에는 쓰지 않음.
+    KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 sell_priority 단일 순위로 배분.
+    반환: ([(holding, qty), ...], excess)"""
+    total_eval = sum(h["eval_sum"] for h in holdings)
+    excess = total_excess(cash, total_eval, market_ratio)
+    if excess <= 0:
+        return [], excess
+
+    for h in holdings:
+        st = strength_fn(h["code"])
+        ql = quality_fn(h["code"])
+        h["strength"], h["quality"] = st, ql
+        h["sell_priority"] = sell_priority(st)      # 수급점수, 차트점수 기반 매도 우선 순위
+    return allocate(holdings, excess), excess
+
+
+def quality_score_from_history(conn, code, as_of=None):
+    """analysis_history 정량필드 → 0~100 성장/가치 점수 (기준③).
+    as_of(YYYYMMDD) 지정 시 point-in-time(그 이하 최신)로 조회."""
+    cur = conn.cursor()
+    if as_of:
+        cur.execute("""
+            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
+            FROM analysis_history
+            WHERE stock_code = %s AND run_at <= %s::date + interval '1 day'
+            ORDER BY id DESC LIMIT 1
+        """, (code, as_of))
+    else:
+        cur.execute("""
+            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
+            FROM analysis_history
+            WHERE stock_code = %s ORDER BY id DESC LIMIT 1
+        """, (code,))
+    r = cur.fetchone()
+    cur.close()
+    if not r:
+        return 45.0   # 자료 없음 → 중립
+    trend, fwd, vsig, band, upside = r
+    # 성장트렌드
+    base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70, "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
+    # 영업이익증감률 : ±10
+    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5
+    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑
+    val_adj = 15 if vsig else 0
+    # 목표주가 대비 상승여력 : 0~10
+    up_adj = max(0, min(40, float(upside or 0))) * 0.25
+    return max(0.0, min(100.0, base + fwd_adj + val_adj + up_adj))
+
+# ────────────────────────────────────────────────────────────────────────────
+# 점수 계산용 데이터 fetch (simul_server 복제)
+# ────────────────────────────────────────────────────────────────────────────
+def _fetch_daily_ohlcv(at, ak, asec, code):
+    try:
+        headers = {"Content-Type": "application/json",
+               "authorization": f"Bearer {at}",
+               "appkey": ak, "appsecret": asec,
+               "tr_id": "FHKST01010400", "custtype": "P"}
+        
+        r = requests.get(f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers=headers,
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                                 "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                         verify=False, timeout=10)
+        rows = r.json().get("output") or []
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+def _make_strength_fn(ac, cache):
+    at, ak, asec = ac["access_token"], ac["app_key"], ac["app_secret"]
+
+    def fn(code):
+        if code in cache:
+            return cache[code]
+        time.sleep(0.25)
+        ohlcv = _fetch_daily_ohlcv(at, ak, asec, code)
+        chart  = _calc_chart_score(ohlcv)
+        chart  = 50 if chart  is None else chart
+        
+        st = W_CHART * chart
+        cache[code] = st
+        return st
+    return fn
+
+# ────────────────────────────────────────────────────────────────────────────
+# 수급/차트 점수 (simul_server._calc_*_score 복제, 각 0~100)
+# ────────────────────────────────────────────────────────────────────────────
+def _adx(highs, lows, closes, period=14):
+    n = len(closes)
+    if n < period * 2:
+        return None, None, None
+    trs, plus_dm, minus_dm = [], [], []
+    for i in range(1, n):
+        up, dn = highs[i] - highs[i-1], lows[i-1] - lows[i]
+        plus_dm.append(up if (up > dn and up > 0) else 0.0)
+        minus_dm.append(dn if (dn > up and dn > 0) else 0.0)
+        trs.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+
+    def _smooth(x):
+        s = [sum(x[:period])]
+        for v in x[period:]:
+            s.append(s[-1] - s[-1]/period + v)
+        return s
+    tr_s, pdm_s, mdm_s = _smooth(trs), _smooth(plus_dm), _smooth(minus_dm)
+    dxs = []
+    for tr, pdm, mdm in zip(tr_s, pdm_s, mdm_s):
+        if tr == 0:
+            continue
+        pdi, mdi = 100*pdm/tr, 100*mdm/tr
+        if pdi + mdi == 0:
+            continue
+        dxs.append(100*abs(pdi-mdi)/(pdi+mdi))
+    if len(dxs) < period:
+        return None, None, None
+    adx = sum(dxs[-period:]) / period
+    pdi = 100*pdm_s[-1]/tr_s[-1] if tr_s[-1] else 0.0
+    mdi = 100*mdm_s[-1]/tr_s[-1] if tr_s[-1] else 0.0
+    return adx, pdi, mdi
+
+def _calc_chart_score(rows):
+    if not rows or len(rows) < 25:
+        return None
+    def _f(v):
+        try: return float(v)
+        except: return 0.0
+    closes  = [_f(r.get("stck_clpr", 0)) for r in rows]
+    highs   = [_f(r.get("stck_hgpr", 0)) for r in rows]
+    lows    = [_f(r.get("stck_lwpr", 0)) for r in rows]
+    volumes = [_f(r.get("acml_vol",  0)) for r in rows]
+    cur = closes[0]
+    ma5  = sum(closes[:5]) / 5
+    ma20 = sum(closes[:20]) / 20
+    ma60 = sum(closes[:60]) / 60 if len(closes) >= 60 else None
+
+    if ma60:
+        if   ma5 > ma20 > ma60:               trend_sc = 30
+        elif ma5 > ma20 and ma20 < ma60:      trend_sc = 22
+        elif ma5 > ma60 and ma5 <= ma20:      trend_sc = 16
+        elif abs(ma5-ma20)/ma20 < 0.01:       trend_sc = 10
+        elif ma5 < ma20 and ma20 > ma60:      trend_sc = 5
+        else:                                 trend_sc = 0
+    else:
+        if   ma5 > ma20*1.02: trend_sc = 22
+        elif ma5 > ma20:      trend_sc = 16
+        elif ma5 > ma20*0.99: trend_sc = 10
+        else:                 trend_sc = 0
+
+    adx, pdi, mdi = _adx(list(reversed(highs)), list(reversed(lows)), list(reversed(closes)))
+    if adx is None:                            adx_sc = 8
+    elif adx >= 40 and pdi > mdi:              adx_sc = 25
+    elif adx >= 25 and pdi > mdi:              adx_sc = 20
+    elif adx >= 25 and pdi <= mdi:             adx_sc = 5
+    elif adx >= 20:                            adx_sc = 12
+    else:                                      adx_sc = 8
+
+    d = (cur - ma20)/ma20*100 if ma20 else 0.0
+    if   -3 <= d <= 5:    dev_sc = 20
+    elif  5 <  d <= 10:   dev_sc = 15
+    elif -8 <= d < -3:    dev_sc = 15
+    elif -15 <= d < -8:   dev_sc = 12
+    elif 10 <  d <= 15:   dev_sc = 10
+    elif d < -15:         dev_sc = 8
+    else:                 dev_sc = 5
+
+    va5, va20 = sum(volumes[:5])/5, sum(volumes[:20])/20
+    v = va5/va20*100 if va20 else 100
+    vol_sc = 15 if v > 150 else 12 if v > 120 else 9 if v > 90 else 6 if v > 70 else 3
+
+    vod = volumes[0]/volumes[1]*100 if len(volumes) >= 2 and volumes[1] > 0 else 100
+    vod_sc = 10 if vod > 150 else 8 if vod > 120 else 6 if vod > 80 else 4 if vod > 50 else 2
+
+    return trend_sc + adx_sc + dev_sc + vol_sc + vod_sc
+
+def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="neutral",
+                       dly_acct=SIMUL_DLY_ACCT):
+    """
+    sim_date(YYYYMMDD) 종가 기준 리밸런싱을 시뮬레이션.
+      - 보유:   dly_trading_balance_simul (balance_price=매입가, balance_qty, balance_amt=보유금액, value_amt=수익금액)
+      - 현금:   dly_acct_balance_simul.prvs_excc_amt
+      - 시장비율: dly_acct_balance.market_ratio (실제 그 날의 값)
+      - 기준①:  strength_mode='neutral'(50 고정) | 'pit'(로컬 일봉 이력 필요)
+      - 참고:    invest_point(quality)는 analysis_history point-in-time (run_at <= sim_date) 값으로 표시만
+    매도분은 trading_trail_simul(trail_tp='4')에 기록하고 dly_trading_balance_simul 잔량을 차감.
+    dly_acct_balance_simul 재집계는 process_account_simul 이 이미 담당한 뒤 마지막 단계로 호출된다."""
+    conn = db.connect(conn_string)
+    try:
+        cur = conn.cursor()
+        # 1) 보유 포지션
+        cur.execute("""
+            SELECT A.code, A.name, A.balance_price, A.balance_qty, A.balance_amt, A.value_amt
+            FROM public.dly_trading_balance_simul A, 
+            (
+                SELECT code, name
+                FROM  public.trading_trail_simul
+                WHERE acct_no = %s
+                AND trading_plan = 'h'
+                AND trail_tp = 'L'
+                AND COALESCE(basic_qty, 0) > 0
+                AND trail_day = %s
+            ) B 
+            WHERE A.code = B.code
+            AND A.acct_no = %s AND A.balance_day = %s AND A.use_yn = 'Y' AND A.balance_qty > 0
+        """, (SIMUL_ACCT, sim_date, dly_acct, sim_date))
+        rows = cur.fetchall()
+        if not rows:
+            print(f"[SIMUL {sim_date}] 리밸런싱 대상 보유 없음 → 스킵")
+            return {"date": sim_date, "orders": []}
+
+        holdings = []
+        for code, name, bprice, bqty, bamt, vamt in rows:
+            prev_day_info = get_prev_day_info(
+                code,
+                sim_date,
+                phiils2_account["access_token"],
+                phiils2_account["app_key"], 
+                phiils2_account["app_secret"],
+                conn
+            )
+
+            if prev_day_info is None:
+                print(f"[{name}-{code}] 전일 일봉 데이터 미존재")
+                continue
+
+            prev_low = prev_day_info['low_price']
+
+            bqty = int(bqty or 0)
+            eval_sum = int(bamt or 0) + int(vamt or 0)              # 평가금액 = 보유금액 + 수익금액
+            cur_price = int(round(eval_sum / bqty)) if bqty else 0  # 종가 근사
+
+            # 전일 저가 현재가 이탈시
+            if prev_low > int(cur_price or 0):
+                holdings.append({"code": code, "name": name or code,
+                                "current_price": cur_price, "eval_sum": eval_sum,
+                                "purchase_price": int(float(bprice or 0)),
+                                "avail_qty": bqty})
+
+        if len(holdings) > 0:
+            # 2) 현금 (sim_date 시점 예수금)
+            prev_date = get_previous_business_day(
+                (datetime.strptime(sim_date, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d"), conn
+            )
+            
+            cur.execute("""
+                SELECT 
+                    prvs_excc_amt, 
+                    pchs_amt, 
+                    (
+                        SELECT SUM(balance_amt)
+                        FROM public.dly_trading_balance_simul
+                        WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y'
+                    ),
+                    (
+                        SELECT COALESCE(SUM((trail_price - basic_price)*trail_qty), 0)
+                        FROM trading_trail_simul
+                        WHERE acct_no = 'SIMUL' AND trail_day = %s
+                        AND trail_tp IN ('3','4')
+                        AND trail_price > 0 AND trail_qty > 0
+                    )
+                FROM dly_acct_balance_simul
+                WHERE acct = %s AND dt < %s ORDER BY dt DESC LIMIT 1
+            """, (dly_acct, sim_date, sim_date, dly_acct, prev_date))
+            pt_row                  = cur.fetchone()
+            prev_excc               = int(pt_row[0]) if pt_row else None
+            prev_pchs               = int(pt_row[1]) if pt_row else 0
+            pchs_amt                = int(pt_row[2]) if pt_row else 0
+            total_profit_loss_amt   = int(pt_row[3]) if pt_row else 0
+
+            # 자본기준: dly_acct_balance_simul 의 prev_excc(전일 예수금) 사용 (없으면 TOTAL_INVEST_BASE 폴백)
+            base_capital  = prev_excc if prev_excc is not None else TOTAL_INVEST_BASE
+            # 예수금 = 전일 예수금 - 매수총액 + 전일 매수총액 + 실현손익
+            cash = base_capital - pchs_amt + prev_pchs + total_profit_loss_amt
+
+            # 3) 그 날의 시장비율 (실제 dly_acct_balance)
+            cur.execute("""
+                SELECT market_ratio
+                FROM dly_acct_balance WHERE dt = %s
+                ORDER BY last_chg_date DESC NULLS LAST LIMIT 1
+            """, (sim_date,))
+            sr = cur.fetchone()
+            if not sr:
+                print(f"[SIMUL {sim_date}] dly_acct_balance 신호 없음 → 리밸런싱 스킵")
+                return {"date": sim_date, "orders": []}
+            mr = sr[0]
+            cur.close()
+
+            # 4) 점수 함수 (point-in-time)
+            def quality_fn(code):
+                return quality_score_from_history(conn, code, as_of=sim_date)
+
+            cache = {}
+            strength_fn = _make_strength_fn(phiils2_account, cache)
+
+            # 5) 주문 산출
+            orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
+
+            print(f"[SIMUL {sim_date}] 리밸런싱 cash={cash:,} mr={mr} "
+                f"초과={excess:,} 매도={len(orders)}건")
+
+            # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
+            applied = []
+            for h, qty in orders:
+                sell_price = h["current_price"]
+                cur2 = conn.cursor()
+                cur2.execute("""
+                    SELECT basic_price, basic_qty, trail_dtm, trail_tp
+                    FROM trading_trail_simul
+                    WHERE acct_no = %s AND trail_day = %s AND code = %s
+                    AND trail_tp IN ('1','2','L','P')
+                    ORDER BY trail_dtm DESC LIMIT 1
+                """, (SIMUL_ACCT, sim_date, h["code"]))
+                row = cur2.fetchone()
+                if not row:
+                    print(f"  ⚠ {h['name']}[{h['code']}] 활성 trading_trail_simul 행 없음 → 리밸런싱 매도 스킵")
+                    cur2.close()
+                    continue
+                basic_price, basic_qty, trail_dtm, cur_trail_tp = int(row[0]), int(row[1]), row[2], row[3]
+                remaining_qty = basic_qty - qty
+                new_trail_tp  = '4' if remaining_qty <= 0 else '3'
+                new_basic_amt = basic_price * remaining_qty
+                trail_rate    = round((sell_price - basic_price) / basic_price * 100, 2) if basic_price else 0.0
+                pnl = int((sell_price - basic_price) * qty)
+
+                cur2.execute("""
+                    UPDATE trading_trail_simul SET
+                        trail_price  = %s,
+                        trail_qty    = %s,
+                        trail_amt    = %s,
+                        trail_rate   = %s,
+                        trail_tp     = %s,
+                        proc_min     = %s,
+                        basic_qty    = %s,
+                        basic_amt    = %s,
+                        trade_result = %s,
+                        mod_dt       = %s
+                    WHERE acct_no = %s AND code = %s
+                    AND trail_day = %s AND trail_dtm = %s
+                    AND trail_tp IN ('1','2','L','P')
+                """, (
+                    sell_price, qty, sell_price * qty, trail_rate,
+                    new_trail_tp, "152900",
+                    remaining_qty, new_basic_amt,
+                    f"시장비율 리밸런싱({horizon})", datetime.now(),
+                    SIMUL_ACCT, h["code"], sim_date, trail_dtm,
+                ))
+                cur2.execute("""
+                    UPDATE dly_trading_balance_simul
+                    SET balance_qty = balance_qty - %s,
+                        balance_amt = GREATEST(balance_amt - %s, 0),
+                        value_amt = %s,
+                        sell_qty = %s,
+                        mod_dt = %s
+                    WHERE acct_no = %s AND balance_day = %s AND code = %s
+                """, (qty, basic_price * qty, pnl, qty, datetime.now(), dly_acct, sim_date, h["code"]))
+                conn.commit()
+                cur2.close()
+                applied.append({"code": h["code"], "qty": qty, "sell_price": sell_price, "pnl": pnl})
+                print(f"  · 리밸런싱 매도 {h['name']}[{h['code']}] {qty}주 @ {sell_price:,} 손익 {pnl:,} "
+                    f"(quality={h.get('quality',0):.0f}, trail_tp {cur_trail_tp}→{new_trail_tp})")
+                
+            return {"date": sim_date, "market_ratio": mr,
+                            "excess": excess,
+                            "orders": applied,
+                            "realized_pnl": sum(a["pnl"] for a in applied)}    
+
+        else:
+            return {"date": sim_date, "market_ratio": "",
+                            "excess": "",
+                            "orders": "",
+                            "realized_pnl": ""}
+        
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────
 # proc_min 이후 1분봉 기준 trail_price 미존재 대상 종가 갱신
 # ─────────────────────────────────────────
 def update_trail_price_at_close(conn, ac):
@@ -1796,6 +2225,12 @@ def process_account_simul():
 
         # dly_acct_balance 시장흐름 값을 dly_acct_balance_simul 에 반영
         _sync_market_trend_to_simul(today, conn_acct, prev_tot_evlu_amt)
+
+        # 시장비율 기반 리밸런싱 시뮬레이션 (동일 수행일자 today 를 sim_date 로 동시 처리)
+        try:
+            simulate_rebalance(ac, today)
+        except Exception as e:
+            print(f"[SIMUL] 리밸런싱 시뮬레이션 오류: {e}")
 
     except Exception as e:
         print(f"[SIMUL] 계좌 처리 오류: {e}")

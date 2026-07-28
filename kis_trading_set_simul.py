@@ -158,7 +158,8 @@ try:
                COALESCE(stop_price, 0) AS stop_price,
                COALESCE(target_price, 0) AS target_price,
                COALESCE(trade_tp, 'M') AS trade_tp,
-               COALESCE(exit_price, 0) AS exit_price
+               COALESCE(exit_price, 0) AS exit_price,
+               trading_plan
         FROM {SIMUL_TABLE}
         WHERE acct_no = %s
           AND trail_day = %s
@@ -175,8 +176,8 @@ try:
                 acct_no, name, code, trail_day, trail_dtm, trail_tp,
                 basic_price, basic_qty, basic_amt,
                 volumn, stop_price, target_price,
-                proc_min, trade_tp, exit_price, loss_amt, crt_dt, mod_dt
-            ) VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s,%s,%s)
+                proc_min, trade_tp, exit_price, loss_amt, crt_dt, mod_dt, trading_plan
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (acct_no, code, trail_day, trail_dtm, trail_tp) DO NOTHING
         """
         cur_ins = conn.cursor()
@@ -211,6 +212,7 @@ try:
                 p_name         = rows[0][1]
                 p_volumn       = 0
                 p_trade_tp     = next((r[12] for r in rows if r[12]), 'M')
+                p_trading_plan = next((r[14] for r in rows if r[14]), None)
                 print(f"[SIMUL] {p_code}({p_name}) 동일종목 {len(rows)}건 병합 → trail_tp={next_trail_tp}"
                       f" 매수단가:{p_basic_price:,} 수량:{p_basic_qty:,}")
             else:
@@ -218,7 +220,7 @@ try:
                 (_, p_name, _, p_trail_day, p_trail_dtm, p_trail_tp,
                  p_basic_price, p_basic_qty, p_basic_amt,
                  p_volumn, p_stop_price, p_target_price,
-                 p_trade_tp, p_exit_price) = row
+                 p_trade_tp, p_exit_price, p_trading_plan) = row
 
                 if p_trail_tp in ('3', 'L'):
                     next_trail_tp = 'L'
@@ -262,12 +264,12 @@ try:
                     SIMUL_ACCT, p_name, p_code, trail_day, '090000', next_trail_tp,
                     p_basic_price, p_basic_qty, p_basic_price * p_basic_qty,
                     p_volumn, stop_price_adj, target_price_adj,
-                    '090000', p_trade_tp, exit_price_adj, loss_amt, now, now
+                    '090000', p_trade_tp, exit_price_adj, loss_amt, now, now, p_trading_plan
                 ))
                 if cur_ins.rowcount > 0:
                     inserted_count += 1
                     inserted_info.append({
-                        'code': p_code, 'name': p_name, 'trail_tp': next_trail_tp,
+                        'code': p_code, 'name': p_name, 'trail_tp': next_trail_tp, 'trading_plan': p_trading_plan,
                         'basic_price': p_basic_price, 'stop_price': stop_price_adj,
                         'exit_price': exit_price_adj, 'target_price': target_price_adj,
                     })
@@ -284,7 +286,7 @@ try:
         )
         for info in inserted_info:
             print(
-                f"  └ {info['name']}({info['code']}) trail_tp={info['trail_tp']}"
+                f"  └ {info['name']}({info['code']}) trail_tp={info['trail_tp']}, trading_plan={info['trading_plan']}"
                 f" 매수가:{int(info['basic_price']):,}"
                 f" 이탈가:{int(info['stop_price']):,}"
                 f" 추세이탈가:{int(info['exit_price']):,}"

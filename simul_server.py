@@ -563,6 +563,12 @@ def update_trail():
     if basic_qty    is not None: sets.append("basic_qty    = %s"); params.append(basic_qty)
     if trail_tp:                 sets.append("trail_tp     = %s"); params.append(trail_tp)
 
+    # 매매계획(trading_plan): 홀딩='h'/투자='i'/빈값=None — 프론트가 항상 현재값을 채워
+    # 보내므로(선택 안 해도 기존값 재전송) 값 유무와 무관하게 키 존재 여부로만 판단한다.
+    if 'trading_plan' in data:
+        trading_plan = None if str(data.get('trading_plan')) == 'n' else str(data.get('trading_plan') or '').strip() or None
+        sets.append("trading_plan = %s"); params.append(trading_plan)
+
     if basic_price is not None and basic_qty is not None:
         sets.append("basic_amt = %s"); params.append(basic_price * basic_qty)
     if basic_price is not None and exit_price is not None and basic_qty is not None:
@@ -858,7 +864,7 @@ _SAVE_SQLS = {
             proc_min, trade_tp, exit_price, loss_amt, crt_dt, mod_dt,
             order_no, order_type, order_dt, order_tmd, order_price, order_amount,
             complete_qty, remain_qty, trail_plan, trail_price, trail_qty,
-            trail_amt, trail_rate, trade_result, last_alert_keys
+            trail_amt, trail_rate, trade_result, last_alert_keys, trading_plan
         )
         SELECT TO_CHAR(NOW(),'YYYYMMDDHH24MISS'),
             acct_no, name, code, trail_day, trail_dtm, trail_tp,
@@ -866,7 +872,7 @@ _SAVE_SQLS = {
             proc_min, trade_tp, exit_price, loss_amt, crt_dt, mod_dt,
             order_no, order_type, order_dt, order_tmd, order_price, order_amount,
             complete_qty, remain_qty, trail_plan, trail_price, trail_qty,
-            trail_amt, trail_rate, trade_result, last_alert_keys
+            trail_amt, trail_rate, trade_result, last_alert_keys, trading_plan
         FROM trading_trail_simul
     """,
     'dly_acct_balance_simul': """
@@ -1324,7 +1330,7 @@ def api_active_stocks():
         cur  = conn.cursor()
         cur.execute("""
             SELECT code, name, trail_tp, basic_price, basic_qty,
-                   stop_price, target_price, exit_price
+                   stop_price, target_price, exit_price, trading_plan
             FROM trading_trail_simul
             WHERE acct_no = 'SIMUL' AND trail_day = %s
               AND trail_tp IN ('1','2','L')
@@ -1343,6 +1349,7 @@ def api_active_stocks():
                 'stop_price':   int(r[5]) if r[5] else None,
                 'target_price': int(r[6]) if r[6] else None,
                 'exit_price':   int(r[7]) if r[7] else None,
+                'trading_plan': r[8] or '',
             }
             for r in rows
         ])
