@@ -982,6 +982,44 @@ def _fetch_daily_ohlcv(ac, code):
     except Exception:
         return []
 
+def _calc_peak_trough_trend(closes: list, dates: list) -> dict | None:
+    """종가 리스트(날짜 오름차순) 기준 지그재그 고점/저점으로 현재 추세와 그 시작일 계산.
+    고점: 전일 대비 상승 + 익일 대비 하락. 저점: 전일 대비 하락 + 익일 대비 상승.
+    추세: 마지막 고점 재돌파 → Uptrend, 마지막 저점 재이탈 → Downtrend, 그 외 → Sideways."""
+    n = len(closes)
+    if n < 3:
+        return None
+
+    high_pts = [None] * n
+    low_pts  = [None] * n
+    for i in range(1, n - 1):
+        if closes[i] > closes[i - 1] and closes[i] > closes[i + 1]:
+            high_pts[i] = closes[i]
+        if closes[i] < closes[i - 1] and closes[i] < closes[i + 1]:
+            low_pts[i] = closes[i]
+
+    trends = []
+    last_high, last_low = None, None
+    for i in range(n):
+        if high_pts[i] is not None:
+            last_high = high_pts[i]
+        if low_pts[i] is not None:
+            last_low = low_pts[i]
+        if last_high is not None and closes[i] > last_high:
+            trends.append('Uptrend')
+        elif last_low is not None and closes[i] < last_low:
+            trends.append('Downtrend')
+        else:
+            trends.append('Sideways')
+
+    # 마지막(현재) 추세 구간의 시작일까지 역방향 탐색
+    cur_trend = trends[-1]
+    start_idx = n - 1
+    while start_idx > 0 and trends[start_idx - 1] == cur_trend:
+        start_idx -= 1
+    return {'trend': cur_trend, 'start_date': dates[start_idx]}
+
+
 def _fetch_short_selling(ac, code):
     """FHPST04830000: 일별 공매도 추이 (output2, 최신→과거).
     필드: stck_bsop_date, ssts_vol_rlim(공매도비율%)"""
@@ -1258,6 +1296,28 @@ def _calc_supply_score(ohlcv_rows, inv_rows, price_out, ssts_rows=None):
             'obv_chg_pct':  round(obv_chg, 2),   'obv_score':  obv_sc,
         }
     }
+
+
+@app.route('/api/stock-trend')
+def stock_trend():
+    """종목 현재 추세(Uptrend/Downtrend/Sideways) + 추세 시작일 (지그재그 고점/저점 기준)."""
+    code = request.args.get('code', '').strip().zfill(6)
+    if not code or not code.isdigit():
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+    ac = _get_api_account()
+    if not ac:
+        return jsonify({'error': 'API 계좌 정보 없음'}), 500
+    try:
+        rows = _fetch_daily_ohlcv(ac, code)
+        if not rows:
+            return jsonify({'trend': None})
+        rows = list(reversed(rows))  # KIS 응답(최신→과거) → 날짜 오름차순
+        dates  = [r.get('stck_bsop_date') for r in rows]
+        closes = [int(r.get('stck_clpr') or 0) for r in rows]
+        result = _calc_peak_trough_trend(closes, dates)
+        return jsonify(result or {'trend': None})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stock-scores')
@@ -1996,8 +2056,8 @@ def _analysis_history_invest_points(code: str) -> dict:
 
 _naver_reports_cache: dict = {}
 
-def _naver_reports(code: str, max_reports: int = 10) -> dict:
-    """네이버증권 모바일 API — 종목별 리서치 리포트 (최근 10건).
+def _naver_reports(code: str, max_reports: int = 25) -> dict:
+    """네이버증권 모바일 API — 종목별 리서치 리포트 (최근 25건).
     반환: {reports, consensus}"""
     from collections import Counter
 
@@ -2336,9 +2396,31 @@ def _wr_cf1002_estimates(code: str, frq: str) -> list:
     return rows
 
 
+def _extract_js_obj(text: str, key: str):
+    """HTML에 인라인된 `key: {...}` 형태의 JS 객체 리터럴을 중괄호 균형을 맞춰 추출·파싱.
+    (wcomp.fnguide.com 페이지는 초기 데이터를 <script>의 xxx.init({...}) 인자로 내려준다 —
+    바깥 래퍼는 키가 따옴표 없는 JS 리터럴이라 전체를 json.loads 할 수 없어 값 단위로 추출한다)"""
+    m = re.search(rf'{re.escape(key)}\s*:\s*(\{{)', text)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except Exception:
+                    return None
+    return None
+
+
 def _fnguide_data(code: str) -> dict:
     """FnGuide에서 제품비율(키워드), 시장점유율, 투자의견, 목표주가 수집."""
-    import xml.etree.ElementTree as ET, re as _re
+    import re as _re
     if code in _fnguide_cache:
         return _fnguide_cache[code]
 
@@ -2350,38 +2432,43 @@ def _fnguide_data(code: str) -> dict:
     result = {'keywords': [], 'products': [], 'market_shares': [], 'consensus': None,
               'next_earnings': None, 'financial_highlight': []}
 
-    # ── XML 데이터 (제품비율 / 시장점유율) ──────────────────
+    # ── 제품비율(salesPercent) / 시장점유율(marketShare) ──────────────────
+    # 구버전 comp.fnguide.com XML 엔드포인트(SVO2/xml/corp_ifrs)는 폐쇄되어
+    # "페이지가 없습니다"(신버전 안내) HTML만 반환한다 — 신버전 wcomp.fnguide.com의
+    # CompanyInfo/Information 페이지가 같은 데이터를 <script>에 인라인 JSON으로 내려준다.
+    # 파라미터는 gicode=A{code} 가 아니라 cmp_cd={code}(접두사 없는 6자리) 이다 —
+    # gicode 는 잘못 넘겨도 에러 없이 삼성전자(005930) 데이터로 조용히 폴백되어
+    # 처음엔 정상 동작하는 것처럼 보였다(005930으로만 테스트해서 못 잡아낸 버그).
     try:
-        xr = requests.get(
-            f'https://comp.fnguide.com/SVO2/xml/corp_ifrs/{code}.xml',
-            headers=headers, timeout=12
+        ir = requests.get(
+            'https://wcomp.fnguide.com/CompanyInfo/Information',
+            params={'cmp_cd': code},
+            headers={**headers, 'Referer': 'https://wcomp.fnguide.com/'}, timeout=12
         )
-        xml_text = xr.content.decode('euc-kr').replace('encoding="euc-kr"', 'encoding="utf-8"')
-        root = ET.fromstring(xml_text.encode('utf-8'))
+        ir.encoding = 'utf-8'
+        info_html = ir.text
 
-        pr = root.find('product_rate')
-        if pr is not None:
-            for rec in pr.findall('record'):
-                name  = (rec.findtext('name')  or '').strip()
-                value = (rec.findtext('value') or '').strip()
+        sales_pct = _extract_js_obj(info_html, 'salesPercent')
+        if sales_pct:
+            period_keys = [h['ID'] for h in (sales_pct.get('header') or []) if h.get('ID')]  # 과거→최신 순
+            for rec in sales_pct.get('data') or []:
+                name = (rec.get('COMM_NM') or '').strip()
                 if not name or '내부거래' in name or name.startswith('기타'):
                     continue
-                try:
-                    pct = float(value.replace(',', ''))
-                    if pct > 0:
-                        result['products'].append({'name': name, 'pct': round(pct, 1)})
-                except Exception:
-                    pass
+                # 분기별로 공시 항목이 바뀔 수 있어 최신 분기부터 역순으로 값 있는 첫 컬럼 채택
+                pct = next((rec[k] for k in reversed(period_keys) if rec.get(k) is not None), None)
+                if pct is not None and pct > 0:
+                    result['products'].append({'name': name, 'pct': round(float(pct), 1)})
 
-        imr = root.find('imp_mkt_ratio')
-        if imr is not None:
-            for rec in imr.findall('record'):
-                pl = (rec.findtext('prod_list')  or '').strip()
-                pv = (rec.findtext('prod_ratio') or '').strip()
+        market_share = _extract_js_obj(info_html, 'marketShare')
+        if market_share:
+            for rec in market_share.get('data') or []:
+                pl = (rec.get('PRD_NM') or '').strip()
+                pv = rec.get('OCCU_RATIO')
                 if pl:
                     result['market_shares'].append({'product': pl, 'share': pv})
 
-        # 주요 사업영역 키워드 4개: product_rate 카테고리명 우선
+        # 주요 사업영역 키워드 4개: 제품비율 카테고리명 우선
         seen, keywords = set(), []
         for p in result['products']:
             kw = _re.split(r'[,·ㆍ/]', p['name'])[0].strip()
@@ -2391,30 +2478,21 @@ def _fnguide_data(code: str) -> dict:
                 keywords.append(kw)
         result['keywords'] = keywords[:4]
     except Exception as e:
-        print(f'[FnGuide XML] 오류: {e}')
+        print(f'[FnGuide Information] 오류: {e}')
 
-    # ── FnGuide SVD_Main: Financial Summary (연결 분기/연간) + WiseReport 컨센서스 ──
+    # ── Financial Summary (연결 분기/연간) + WiseReport 컨센서스 ──
+    # comp.fnguide.com(SVD_Main.asp)은 신버전(wcomp.fnguide.com) 이전으로 폐쇄되어
+    # 항상 "페이지가 없습니다"만 반환했으므로(never 성공), WiseReport(cTB26 등)를
+    # 곧바로 1차 소스로 사용한다 — 예전처럼 FnGuide 시도 후 실패 폴백하는 왕복을 없앤다.
     try:
         import re as _re2, html as _html_esc2
 
-        _fng_hdr = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                          '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-            'Referer':    'https://comp.fnguide.com/',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
-        }
         _wr_hdr = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                           '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
             'Referer':    'https://navercomp.wisereport.co.kr/',
             'Accept-Language': 'ko-KR,ko;q=0.9',
         }
-
-        def _fng_fetch(url):
-            r = requests.get(url, headers=_fng_hdr, timeout=15)
-            ct = r.headers.get('content-type', '').lower()
-            r.encoding = 'utf-8' if 'utf' in ct else 'euc-kr'
-            return r.text
 
         def _wr_fetch(url):
             r = requests.get(url, headers=_wr_hdr, timeout=12)
@@ -2428,19 +2506,8 @@ def _fnguide_data(code: str) -> dict:
             e = html_text.find('</table>', p)
             return html_text[p: e + 8] if e > 0 else html_text[p: p + window]
 
-        def _extract_div_table(html_text, div_id):
-            """div_id 내 첫 번째 <table>...</table> 추출."""
-            p = html_text.find(f'id="{div_id}"')
-            if p < 0:
-                return ''
-            ts = html_text.find('<table', p)
-            if ts < 0 or ts > p + 1000:
-                return ''
-            te = html_text.find('</table>', ts)
-            return html_text[ts: te + 8] if te > 0 else ''
-
         def _parse_fng_table(tbl_html, re_mod, today_ym):
-            """FnGuide SVD_Main highlight table 파싱 → fh_list."""
+            """FnGuide 스타일 실적 하이라이트 테이블(WiseReport cTBxx 포함) 파싱 → fh_list."""
             if not tbl_html:
                 return []
             thead_m = re_mod.search(r'<thead[^>]*>(.*?)</thead>', tbl_html, re_mod.DOTALL)
@@ -2531,201 +2598,133 @@ def _fnguide_data(code: str) -> dict:
             return fh
 
         with ThreadPoolExecutor(max_workers=2) as _wr_ex:
-            _f_cf = _wr_ex.submit(
-                _fng_fetch,
-                f'https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp'
-                f'?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701')
+            _f_wr = _wr_ex.submit(
+                _wr_fetch,
+                f'https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx?cmp_cd={code}&cn=')
             _f_c1 = _wr_ex.submit(
                 _wr_fetch,
                 f'https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}&cn=')
-        cf_html = _f_cf.result()
+        wr_html = _f_wr.result()
         c1_html = _f_c1.result()
 
-        # ── ① Financial Summary: FnGuide SVD_Main highlight 테이블 ──────────
+        # ── ① Financial Summary: WiseReport cTB26 (연간4 + 분기4) ──────────
         today_ym = datetime.now().strftime('%Y/%m')
 
-        # 연결/분기: FnGuide div ID 후보 순서대로 시도 (사이트 버전별 ID 차이 대응)
-        qtr_tbl = ''
-        _tried_q = set()
-        for _qid in ('highlight_D_E', 'highlight_D_Q', 'highlight_A_E', 'highlight_A_Q'):
-            _tried_q.add(_qid)
-            qtr_tbl = _extract_div_table(cf_html, _qid)
-            if qtr_tbl:
-                print(f'[FnGuide] {code} 분기 div={_qid}')
-                break
-        if not qtr_tbl:
-            # 동적 탐색: cf_html에 있는 모든 highlight_ div 순차 시도
-            for _dm in _re2.finditer(r'id="(highlight_[^"]+)"', cf_html):
-                _did = _dm.group(1)
-                if _did in _tried_q:
-                    continue
-                _tried_q.add(_did)
-                _t = _extract_div_table(cf_html, _did)
-                if not _t:
-                    continue
-                _fh_t = _parse_fng_table(_t, _re2, today_ym)
-                if not _fh_t:
-                    continue
-                # 분기 판별: 기간들의 월이 다양하면 분기 테이블
-                _months = {p.split('/')[1] for p, _ in
-                           [(_r['period'], None) for _r in _fh_t] if '/' in p}
-                if len(_months) > 1:
-                    qtr_tbl = _t
-                    print(f'[FnGuide] {code} 분기 div={_did} (auto-discovered)')
-                    break
+        ann_fh, qtr_fh = [], []
+        tb26 = _extract_table(wr_html, 'cTB26')
+        if tb26:
+            # thead 구조가 20개 이상 컬럼으로 복잡 → 연간 레이블만 신뢰 가능
+            # 연간: `<th class="sub line">\nYYYY/12<br>` 패턴 (결산월 기준)
+            # data 행의 <td>는 [0-3]=연간실적, [4-7]=분기실적 → v[4]는 연간추정 아님
+            # all_periods[4]='2026/12'은 thead에만 존재하는 레이블이므로 [:4]만 사용
+            all_periods = _re2.findall(r'(\d{4}/\d{2})<br', tb26)
+            ann_periods = all_periods[:4]
+            fin_data_wr = {}
+            for row_m in _re2.finditer(
+                r"<th scope='row'[^>]*>\s*([^<]+?)\s*</th>(.*?)</tr>",
+                tb26, _re2.DOTALL
+            ):
+                nm = _re2.sub(r'\s+', ' ', row_m.group(1)).strip()
+                tds_html = _re2.findall(r'<td[^>]*>(.*?)</td>', row_m.group(2), _re2.DOTALL)
+                vals = []
+                for td in tds_html:
+                    sp = _re2.search(r'<span[^>]*>([-\d,\.]+)</span>', td)
+                    if sp:
+                        try: vals.append(float(sp.group(1).replace(',', '')))
+                        except: vals.append(None)
+                    else:
+                        vals.append(None)
+                if nm:
+                    fin_data_wr[nm] = vals
 
-        ann_tbl = ''
-        _tried_a = set()
-        for _aid in ('highlight_D_A', 'highlight_A_A'):
-            _tried_a.add(_aid)
-            ann_tbl = _extract_div_table(cf_html, _aid)
-            if ann_tbl:
-                print(f'[FnGuide] {code} 연간 div={_aid}')
-                break
-        if not ann_tbl:
-            # 동적 탐색: cf_html에 있는 모든 highlight_ div 순차 시도
-            for _dm in _re2.finditer(r'id="(highlight_[^"]+)"', cf_html):
-                _did = _dm.group(1)
-                if _did in _tried_q or _did in _tried_a:
-                    continue
-                _tried_a.add(_did)
-                _t = _extract_div_table(cf_html, _did)
-                if not _t:
-                    continue
-                _fh_t = _parse_fng_table(_t, _re2, today_ym)
-                if not _fh_t:
-                    continue
-                # 연간 판별: 기간들의 월이 모두 같으면 연간 테이블
-                _months = {p.split('/')[1] for p, _ in
-                           [(_r['period'], None) for _r in _fh_t] if '/' in p}
-                if len(_months) == 1:
-                    ann_tbl = _t
-                    print(f'[FnGuide] {code} 연간 div={_did} (auto-discovered)')
-                    break
+            _lbl_rev = ('매출액', '영업수익', '이자수익', '보험료수익')
+            _lbl_op  = ('영업이익', '영업이익(발표기준)', '영업이익(손실)')
+            _lbl_ni  = ('당기순이익', '당기순이익(지배)', '당기순이익(지배주주)',
+                        '지배주주순이익', '당기순이익(손실)')
 
-        qtr_fh  = _parse_fng_table(qtr_tbl, _re2, today_ym)
-        ann_fh  = _parse_fng_table(ann_tbl, _re2, today_ym)
+            n_ann = len(ann_periods)
+            _ann = {k: v[:n_ann] for k, v in fin_data_wr.items() if len(v) >= 1}
 
-        if not qtr_fh and not ann_fh:
-            # fallback: WiseReport cTB26 (연간4 + 분기4)
-            wr_html = _wr_fetch(
-                f'https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx?cmp_cd={code}&cn=')
-            tb26 = _extract_table(wr_html, 'cTB26')
-            if tb26:
-                # thead 구조가 20개 이상 컬럼으로 복잡 → 연간 레이블만 신뢰 가능
-                # 연간: `<th class="sub line">\nYYYY/12<br>` 패턴 (결산월 기준)
-                # data 행의 <td>는 [0-3]=연간실적, [4-7]=분기실적 → v[4]는 연간추정 아님
-                # all_periods[4]='2026/12'은 thead에만 존재하는 레이블이므로 [:4]만 사용
-                all_periods = _re2.findall(r'(\d{4}/\d{2})<br', tb26)
-                ann_periods = all_periods[:4]
-                fin_data_wr = {}
-                for row_m in _re2.finditer(
-                    r"<th scope='row'[^>]*>\s*([^<]+?)\s*</th>(.*?)</tr>",
-                    tb26, _re2.DOTALL
-                ):
-                    nm = _re2.sub(r'\s+', ' ', row_m.group(1)).strip()
-                    tds_html = _re2.findall(r'<td[^>]*>(.*?)</td>', row_m.group(2), _re2.DOTALL)
-                    vals = []
-                    for td in tds_html:
-                        sp = _re2.search(r'<span[^>]*>([-\d,\.]+)</span>', td)
-                        if sp:
-                            try: vals.append(float(sp.group(1).replace(',', '')))
-                            except: vals.append(None)
-                        else:
-                            vals.append(None)
-                    if nm:
-                        fin_data_wr[nm] = vals
+            def _pk(d, *names):
+                for n in names:
+                    if n in d and any(v is not None for v in d[n]):
+                        return d[n]
+                return []
 
-                _lbl_rev = ('매출액', '영업수익', '이자수익', '보험료수익')
-                _lbl_op  = ('영업이익', '영업이익(발표기준)', '영업이익(손실)')
-                _lbl_ni  = ('당기순이익', '당기순이익(지배)', '당기순이익(지배주주)',
-                            '지배주주순이익', '당기순이익(손실)')
+            rev_a = _pk(_ann, *_lbl_rev); op_a = _pk(_ann, *_lbl_op); ni_a = _pk(_ann, *_lbl_ni)
 
-                n_ann = len(ann_periods)
-                _ann = {k: v[:n_ann] for k, v in fin_data_wr.items() if len(v) >= 1}
+            def _row_wr(rv, ov, nv, period, i, is_est=False):
+                rev = rv[i] if i < len(rv) else None
+                op  = ov[i] if i < len(ov) else None
+                ni  = nv[i] if i < len(nv) else None
+                if not any(v is not None for v in (rev, op, ni)):
+                    return None
+                return {
+                    'period': period, 'is_estimate': is_est or period > today_ym,
+                    'revenue': rev, 'op_profit': op, 'net_profit': ni,
+                    'op_margin': round(op / rev * 100, 1) if op and rev and rev > 0 else None,
+                    'op_growth': None,
+                }
 
-                def _pk(d, *names):
-                    for n in names:
-                        if n in d and any(v is not None for v in d[n]):
-                            return d[n]
-                    return []
+            ann_fh = [r for r in (
+                _row_wr(rev_a, op_a, ni_a, p, i) for i, p in enumerate(ann_periods)) if r]
+            # cTB26 분기 레이블이 신뢰 불가 (thead 복잡) → DART 사용
+            qtr_fh = []
+            print(f'[WiseReport cTB26] {code} ann={len(ann_fh)} '
+                  f'ann_periods={ann_periods}')
 
-                rev_a = _pk(_ann, *_lbl_rev); op_a = _pk(_ann, *_lbl_op); ni_a = _pk(_ann, *_lbl_ni)
+            # ── (E) 보완: 여러 WiseReport 소스 순차 탐색 ─────────────────────
+            def _scan_tables_for_fh(html_text, src_label, skip_ids=None):
+                """html_text 내 모든 cTBxx 테이블을 탐색 → (ann_fh, qtr_fh) 반환."""
+                _a, _q = [], []
+                skip_ids = skip_ids or set()
+                for _tm in _re2.finditer(r'id="(cTB\d+)"', html_text):
+                    _tid = _tm.group(1)
+                    if _tid in skip_ids:
+                        continue
+                    _t = _extract_table(html_text, _tid)
+                    if not _t:
+                        continue
+                    _fh = _parse_fng_table(_t, _re2, today_ym)
+                    if not _fh or len(_fh) < 2:
+                        continue
+                    if not any(r.get('revenue') is not None for r in _fh):
+                        continue
+                    _mo = {p.split('/')[1] for p in (r['period'] for r in _fh)
+                           if '/' in p}
+                    if len(_mo) == 1 and not _a:
+                        _a = _fh
+                        print(f'[{src_label}] {code} {_tid} 연간 {len(_fh)}건')
+                    elif len(_mo) > 1 and not _q:
+                        _q = _fh
+                        print(f'[{src_label}] {code} {_tid} 분기 {len(_fh)}건')
+                    if _a and _q:
+                        break
+                return _a, _q
 
-                def _row_wr(rv, ov, nv, period, i, is_est=False):
-                    rev = rv[i] if i < len(rv) else None
-                    op  = ov[i] if i < len(ov) else None
-                    ni  = nv[i] if i < len(nv) else None
-                    if not any(v is not None for v in (rev, op, ni)):
-                        return None
-                    return {
-                        'period': period, 'is_estimate': is_est or period > today_ym,
-                        'revenue': rev, 'op_profit': op, 'net_profit': ni,
-                        'op_margin': round(op / rev * 100, 1) if op and rev and rev > 0 else None,
-                        'op_growth': None,
-                    }
+            # ① c1_html (c1010001.aspx) — 이미 fetch됨
+            _ex_ann, _ex_qtr = _scan_tables_for_fh(
+                c1_html, 'c1_html', skip_ids={'cTB15'})
 
-                ann_fh = [r for r in (
-                    _row_wr(rev_a, op_a, ni_a, p, i) for i, p in enumerate(ann_periods)) if r]
-                # cTB26 분기 레이블이 신뢰 불가 (thead 복잡) → DART 사용
-                qtr_fh = []
-                print(f'[WiseReport cTB26 fallback] {code} ann={len(ann_fh)} '
-                      f'ann_periods={ann_periods}')
-
-                # ── (E) 보완: 여러 WiseReport 소스 순차 탐색 ─────────────────────
-                def _scan_tables_for_fh(html_text, src_label, skip_ids=None):
-                    """html_text 내 모든 cTBxx 테이블을 탐색 → (ann_fh, qtr_fh) 반환."""
-                    _a, _q = [], []
-                    skip_ids = skip_ids or set()
-                    for _tm in _re2.finditer(r'id="(cTB\d+)"', html_text):
-                        _tid = _tm.group(1)
-                        if _tid in skip_ids:
-                            continue
-                        _t = _extract_table(html_text, _tid)
-                        if not _t:
-                            continue
-                        _fh = _parse_fng_table(_t, _re2, today_ym)
-                        if not _fh or len(_fh) < 2:
-                            continue
-                        if not any(r.get('revenue') is not None for r in _fh):
-                            continue
-                        _mo = {p.split('/')[1] for p in (r['period'] for r in _fh)
-                               if '/' in p}
-                        if len(_mo) == 1 and not _a:
-                            _a = _fh
-                            print(f'[{src_label}] {code} {_tid} 연간 {len(_fh)}건')
-                        elif len(_mo) > 1 and not _q:
-                            _q = _fh
-                            print(f'[{src_label}] {code} {_tid} 분기 {len(_fh)}건')
-                        if _a and _q:
-                            break
-                    return _a, _q
-
-                # ① c1_html (c1010001.aspx) — 이미 fetch됨
+            # ② wr_html (cF1001.aspx) — cTB26 외 다른 테이블
+            if not _ex_ann and not _ex_qtr:
                 _ex_ann, _ex_qtr = _scan_tables_for_fh(
-                    c1_html, 'c1_html', skip_ids={'cTB15'})
+                    wr_html, 'cF1001', skip_ids={'cTB26'})
 
-                # ② wr_html (cF1001.aspx) — cTB26 외 다른 테이블
-                if not _ex_ann and not _ex_qtr:
-                    _ex_ann, _ex_qtr = _scan_tables_for_fh(
-                        wr_html, 'cF1001', skip_ids={'cTB26'})
+            # ③ WiseReport cF2001.aspx (재무제표 상세) 추가 시도
+            if not _ex_ann and not _ex_qtr:
+                _wr2 = _wr_fetch(
+                    f'https://navercomp.wisereport.co.kr/v2/company/'
+                    f'cF2001.aspx?cmp_cd={code}&cn=')
+                _ex_ann, _ex_qtr = _scan_tables_for_fh(_wr2, 'cF2001')
 
-                # ③ WiseReport cF2001.aspx (재무제표 상세) 추가 시도
-                if not _ex_ann and not _ex_qtr:
-                    _wr2 = _wr_fetch(
-                        f'https://navercomp.wisereport.co.kr/v2/company/'
-                        f'cF2001.aspx?cmp_cd={code}&cn=')
-                    _ex_ann, _ex_qtr = _scan_tables_for_fh(_wr2, 'cF2001')
-
-                # 발견된 추정치를 기존 cTB26 실적 위에 merge
-                if _ex_ann:
-                    _ex_periods = {r['period'] for r in _ex_ann}
-                    _extra = [r for r in ann_fh if r['period'] not in _ex_periods]
-                    ann_fh = sorted(_extra + _ex_ann, key=lambda x: x['period'])
-                if _ex_qtr:
-                    qtr_fh = _ex_qtr
-            else:
-                ann_fh, qtr_fh = [], []
+            # 발견된 추정치를 기존 cTB26 실적 위에 merge
+            if _ex_ann:
+                _ex_periods = {r['period'] for r in _ex_ann}
+                _extra = [r for r in ann_fh if r['period'] not in _ex_periods]
+                ann_fh = sorted(_extra + _ex_ann, key=lambda x: x['period'])
+            if _ex_qtr:
+                qtr_fh = _ex_qtr
 
         if qtr_fh or ann_fh:
             for j in range(1, len(qtr_fh)):
@@ -2735,8 +2734,7 @@ def _fnguide_data(code: str) -> dict:
             result['financial_highlight'] = qtr_fh
             _ann_e = sum(1 for r in ann_fh if r.get('is_estimate'))
             _qtr_e = sum(1 for r in qtr_fh if r.get('is_estimate'))
-            _src   = 'FnGuide' if (qtr_tbl or ann_tbl) else 'cTB26+보완'
-            print(f'[재무하이라이트] {code} src={_src} '
+            print(f'[재무하이라이트] {code} src=cTB26+보완 '
                   f'ann={len(ann_fh)}(E:{_ann_e}) qtr={len(qtr_fh)}(E:{_qtr_e})')
         else:
             print(f'[재무하이라이트] {code} 재무 데이터 미발견')

@@ -461,6 +461,11 @@
     .ssi-target { color:#2dc653; }
     .ssi-stop   { color:#e63946; }
     .ssi-exit   { color:#f4a261; }
+    .trend-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+                    border-radius:10px; font-size:.72rem; font-weight:700; white-space:nowrap; }
+    .trend-up   { background:#e8f9ee; color:#1e9e52; }
+    .trend-down { background:#fdeaea; color:#c0392b; }
+    .trend-side { background:#f0f2f5; color:#777; }
     .download-panel { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
                       background:#e8f5e9; border:1px solid #a5d6a7; border-radius:8px;
                       padding:10px 14px; margin:6px 0; }
@@ -665,6 +670,10 @@
         />
         <div v-if="form.name" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;padding-left:2px">
           <span style="font-size:.78rem;color:#4361ee">{{ form.name }}</span>
+          <span v-if="stockTrendLoading" style="font-size:.7rem;color:#aaa">추세 계산 중...</span>
+          <span v-if="stockTrend && !stockTrendLoading" class="trend-badge" :class="trendCls(stockTrend.trend)">
+            {{ trendLabel(stockTrend.trend) }} ({{ fmtDay(stockTrend.start_date) }}~)
+          </span>
           <span v-if="stockScoresLoading" style="font-size:.7rem;color:#aaa">점수 계산 중...</span>
           <template v-if="stockScores && !stockScoresLoading">
             <span class="score-badge" :class="scoreCls(stockScores.supply?.score)"
@@ -910,15 +919,13 @@
         <span class="dart-kw-chip" v-for="kw in companyInfo.fnguide.keywords" :key="kw">{{ kw }}</span>
       </div>
 
-      <!-- 4개 요약 섹션 -->
+      <!-- 주요섹션 -->
       <div class="dart-summary-grid">
 
-        <!-- ── 기업정보 (전폭) ── -->
+        <!-- ── 컨센서스 및 기업정보 ── -->
         <div class="dart-summary-box" style="grid-column:1/-1">
           <div class="dart-summary-title" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <span>기업정보</span>
-            <span v-if="companyInfo.invest_summary && companyInfo.invest_summary.reports && companyInfo.invest_summary.reports.length"
-                  class="dart-period" style="margin:0">리포트 {{ companyInfo.invest_summary.reports.length }}건</span>
+            <span>컨센서스 및 기업정보</span>
           </div>
           <!-- 컨센서스 -->
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.consensus">
@@ -941,13 +948,14 @@
               <span v-if="companyInfo.fnguide.consensus.date" style="color:#bbb;font-size:.70rem;margin-left:4px">기준일 {{ companyInfo.fnguide.consensus.date }}</span>
             </div>
           </template>
-          <!-- 기본정보 한 줄 -->
+          <!-- 기업정보 -->
           <div style="display:flex;flex-wrap:wrap;gap:10px;font-size:.78rem;color:#555;margin-bottom:6px">
             <span v-if="companyInfo.ceo_nm">👤 {{ companyInfo.ceo_nm }}</span>
             <span v-if="companyInfo.acc_mt">📅 결산 {{ companyInfo.acc_mt }}월</span>
             <span v-if="companyInfo.est_dt" style="color:#aaa">설립 {{ companyInfo.est_dt }}</span>
             <a v-if="companyInfo.hm_url" :href="'http://'+companyInfo.hm_url.replace(/^https?:\/\//,'')" target="_blank" style="color:#1a73e8">🔗 홈페이지</a>
           </div>
+          <div v-if="companyInfo.adres" style="font-size:.75rem;color:#555">📍 {{ companyInfo.adres }}</div>
           <!-- 사업의 개요 (DART 정기공시, 주요 키워드 포함 문장만) -->
           <template v-if="companyInfo.biz_summary && companyInfo.biz_summary.sentences && companyInfo.biz_summary.sentences.length">
             <div style="border-top:1px solid #e8eaff;padding-top:7px;margin-bottom:8px">
@@ -960,11 +968,11 @@
               </ul>
             </div>
           </template>
-          <!-- 제품 및 사업 현황 소개: 업황·제품수주 관련 뉴스 + 최근 공시 -->
+          <!-- 업황·제품수주 관련 뉴스 + 최근 공시 -->
           <template v-if="(companyInfo.invest_summary && companyInfo.invest_summary.issues && companyInfo.invest_summary.issues.length)
                           || (companyInfo.disclosures && companyInfo.disclosures.length)">
             <div style="border-top:1px solid #e8eaff;padding-top:7px;margin-bottom:8px">
-              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">제품 및 사업 현황</div>
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">관련 뉴스 및 최근 공시</div>
 
               <!-- 업황·제품수주 관련 뉴스 -->
               <template v-if="companyInfo.invest_summary && companyInfo.invest_summary.issues && companyInfo.invest_summary.issues.length">
@@ -1027,8 +1035,11 @@
           <!-- 최근 리포트 목록 -->
           <template v-if="companyInfo.invest_summary && companyInfo.invest_summary.reports && companyInfo.invest_summary.reports.length">
             <div style="border-top:1px solid #e8eaff;padding-top:7px">
-              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">최근 리포트</div>
-              <div v-for="rpt in companyInfo.invest_summary.reports.slice(0,5)" :key="rpt.id"
+              <div style="font-size:.73rem;font-weight:600;color:#4361ee;margin-bottom:4px">최근 리포트
+                <span v-if="companyInfo.invest_summary && companyInfo.invest_summary.reports && companyInfo.invest_summary.reports.length"
+                  class="dart-period" style="margin:0">{{ companyInfo.invest_summary.reports.length }}건</span>
+              </div>
+              <div v-for="rpt in companyInfo.invest_summary.reports.slice(0,25)" :key="rpt.id"
                    style="display:flex;align-items:center;gap:6px;font-size:.74rem;padding:3px 0;border-bottom:1px solid #f0f2ff">
                 <span style="color:#999;flex:none;min-width:65px">{{ rpt.date }}</span>
                 <span style="color:#555;flex:none;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ rpt.firm }}</span>
@@ -1044,9 +1055,9 @@
           </template>
         </div>
 
-        <!-- ── 제품비중 ── -->
+        <!-- ── 제품비중 및 자사 시장점유율── -->
         <div class="dart-summary-box">
-          <div class="dart-summary-title">제품비중</div>
+          <div class="dart-summary-title">제품비중 및 자사 시장점유율</div>
           <template v-if="companyInfo.fnguide && companyInfo.fnguide.products && companyInfo.fnguide.products.length">
             <div v-for="p in companyInfo.fnguide.products" :key="p.name" style="margin-bottom:5px">
               <div style="display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:2px">
@@ -1067,8 +1078,6 @@
               <b style="color:#e67e22">{{ m.share }}%</b>
             </div>
           </template>
-          <div v-if="(!companyInfo.fnguide||!companyInfo.fnguide.products||!companyInfo.fnguide.products.length)&&companyInfo.adres"
-               style="font-size:.75rem;color:#555">📍 {{ companyInfo.adres }}</div>
         </div>
 
         <!-- ── 예상실적 ── -->
@@ -1706,6 +1715,29 @@ createApp({
       }
     }
 
+    const stockTrend        = ref(null);
+    const stockTrendLoading = ref(false);
+    const TREND_LABEL = { Uptrend: '상승', Downtrend: '하락', Sideways: '횡보' };
+
+    async function fetchStockTrend(code) {
+      stockTrend.value        = null;
+      stockTrendLoading.value = true;
+      try {
+        const res  = await fetch(`/api/stock-trend?code=${code}`);
+        const data = await res.json();
+        if (!data.error && data.trend && data.trend !== 'Sideways') stockTrend.value = data;
+      } catch { /* 무시 */ } finally {
+        stockTrendLoading.value = false;
+      }
+    }
+
+    function trendLabel(trend) { return TREND_LABEL[trend] || trend || '-'; }
+    function trendCls(trend) {
+      if (trend === 'Uptrend')   return 'trend-up';
+      if (trend === 'Downtrend') return 'trend-down';
+      return 'trend-side';
+    }
+
     function scoreCls(score) {
       if (score === null || score === undefined) return 'score-none';
       if (score >= 70) return 'score-strong';
@@ -1952,6 +1984,7 @@ createApp({
           await fetchStockInfo(code, form.value.buy_date);
           fetchCompanyInfo(code, form.value.name);
           fetchStockScores(code);
+          fetchStockTrend(code);
         } else {
           const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
           const data = await res.json();
@@ -1961,6 +1994,7 @@ createApp({
             await fetchStockInfo(data.code, form.value.buy_date);
             fetchCompanyInfo(data.code, val);
             fetchStockScores(data.code);
+            fetchStockTrend(data.code);
           }
         }
       } catch { /* 무시 */ } finally {
@@ -2259,6 +2293,8 @@ createApp({
       stockScores.value        = null;
       stockScoresLoading.value = false;
       scoreDetailOpen.value    = '';
+      stockTrend.value         = null;
+      stockTrendLoading.value  = false;
       companyInfo.value    = null;
       companyLoading.value = false;
       bizExpanded.value    = false;
@@ -2285,6 +2321,7 @@ createApp({
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
+      stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
       sellForm, sellPreview, sellLookingUp, canSellCalc,
       trailMode, trailActionDate, activeStocks, activeStocksLoading, selectedStock,
