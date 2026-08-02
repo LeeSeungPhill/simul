@@ -982,7 +982,7 @@ def _fetch_daily_ohlcv(ac, code):
     except Exception:
         return []
 
-def _calc_peak_trough_trend(closes: list, dates: list) -> dict | None:
+def _calc_peak_trough_trend(highs: list, closes: list, lows: list, dates: list) -> dict | None:
     """종가 리스트(날짜 오름차순) 기준 지그재그 고점/저점으로 현재 추세와 그 시작일 계산.
     고점: 전일 대비 상승 + 익일 대비 하락. 저점: 전일 대비 하락 + 익일 대비 상승.
     추세: 마지막 고점 재돌파 → Uptrend, 마지막 저점 재이탈 → Downtrend, 그 외 → Sideways."""
@@ -993,10 +993,14 @@ def _calc_peak_trough_trend(closes: list, dates: list) -> dict | None:
     high_pts = [None] * n
     low_pts  = [None] * n
     for i in range(1, n - 1):
-        if closes[i] > closes[i - 1] and closes[i] > closes[i + 1]:
-            high_pts[i] = closes[i]
-        if closes[i] < closes[i - 1] and closes[i] < closes[i + 1]:
-            low_pts[i] = closes[i]
+        if highs[i] > highs[i - 1] and highs[i] > highs[i + 1]:
+            high_pts[i] = highs[i]
+        # if closes[i] > closes[i - 1] and closes[i] > closes[i + 1]:
+        #     high_pts[i] = closes[i]
+        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]:
+            low_pts[i] = lows[i]        
+        # if closes[i] < closes[i - 1] and closes[i] < closes[i + 1]:
+        #     low_pts[i] = closes[i]
 
     trends = []
     last_high, last_low = None, None
@@ -1005,9 +1009,9 @@ def _calc_peak_trough_trend(closes: list, dates: list) -> dict | None:
             last_high = high_pts[i]
         if low_pts[i] is not None:
             last_low = low_pts[i]
-        if last_high is not None and closes[i] > last_high:
+        if last_high is not None and highs[i] > last_high:
             trends.append('Uptrend')
-        elif last_low is not None and closes[i] < last_low:
+        elif last_low is not None and lows[i] < last_low:
             trends.append('Downtrend')
         else:
             trends.append('Sideways')
@@ -1313,8 +1317,10 @@ def stock_trend():
             return jsonify({'trend': None})
         rows = list(reversed(rows))  # KIS 응답(최신→과거) → 날짜 오름차순
         dates  = [r.get('stck_bsop_date') for r in rows]
+        highs = [int(r.get('stck_hgpr') or 0) for r in rows]
         closes = [int(r.get('stck_clpr') or 0) for r in rows]
-        result = _calc_peak_trough_trend(closes, dates)
+        lows = [int(r.get('stck_lwpr') or 0) for r in rows]
+        result = _calc_peak_trough_trend(highs, closes, lows, dates)
         return jsonify(result or {'trend': None})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
