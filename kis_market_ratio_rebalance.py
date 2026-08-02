@@ -755,9 +755,11 @@ def run(nick, horizon="D", dry_run=False, force=False):
             tag = (f"{h['name']}[{h['code']}] {qty}주 "
                    f"(strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
                    f"priority={h.get('sell_priority',0):.0f}) 예상 {h['current_price']*qty:,}원")
-            if dry_run:
-                print(f"  [DRY] 매도 {tag}")
-                continue
+            # if dry_run:
+            #     print(f"  [DRY] 매도 {tag}")
+            #     continue
+            print(f"  [DRY] 매도 {tag}")
+            
             ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"],
                             str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
             if ar.isOK():

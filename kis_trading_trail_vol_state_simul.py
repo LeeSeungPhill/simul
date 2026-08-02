@@ -160,17 +160,16 @@ def get_kis_daily_chart(stock_code, trade_date, access_token, app_key, app_secre
     }
 
 
-def get_kis_daily_chart_full(stock_code, access_token, app_key, app_secret):
+def get_kis_daily_chart_full(stock_code, trade_date, access_token, app_key, app_secret):
     """전체 일봉 조회 (최근 ~140일, inquire-daily-itemchartprice output2 사용, 캐시 우선)."""
     with _daily_cache_lock:
         if stock_code in _daily_chart_full_cache:
             return _daily_chart_full_cache[stock_code]
-    d_to   = datetime.now().strftime("%Y%m%d")
-    d_from = (datetime.now() - timedelta(days=140)).strftime("%Y%m%d")
+    d_from = (datetime.strptime(trade_date, "%Y%m%d") - timedelta(days=140)).strftime("%Y%m%d")
     params = {"FID_COND_MRKT_DIV_CODE": "J",
               "FID_INPUT_ISCD":         stock_code,
               "FID_INPUT_DATE_1":       d_from,
-              "FID_INPUT_DATE_2":       d_to,
+              "FID_INPUT_DATE_2":       trade_date,
               "FID_PERIOD_DIV_CODE":    "D",
               "FID_ORG_ADJ_PRC":        "1"}
     try:
@@ -489,6 +488,63 @@ def _get_stock_market_type(stock_code: str, access_token: str,
     return 'KOSPI'
 
 
+def _calc_peak_trough_trend(highs: list, closes: list, lows: list, dates: list) -> dict | None:
+    """일봉 고가/저가 리스트(날짜 오름차순) 기준 지그재그 고점/저점으로 현재 추세와 그 시작일 계산.
+    simul_server.py stock_trend() / _calc_peak_trough_trend() 동일 로직.
+    고점: 전일 대비 상승 + 익일 대비 하락. 저점: 전일 대비 하락 + 익일 대비 상승.
+    추세: 마지막 고점 재돌파 → Uptrend, 마지막 저점 재이탈 → Downtrend, 그 외 → Sideways."""
+    n = len(closes)
+    if n < 3:
+        return None
+
+    high_pts = [None] * n
+    low_pts  = [None] * n
+    for i in range(1, n - 1):
+        if highs[i] > highs[i - 1] and highs[i] > highs[i + 1]:
+            high_pts[i] = highs[i]
+        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]:
+            low_pts[i] = lows[i]
+
+    trends = []
+    last_high, last_low = None, None
+    for i in range(n):
+        if high_pts[i] is not None:
+            last_high = high_pts[i]
+        if low_pts[i] is not None:
+            last_low = low_pts[i]
+        if last_high is not None and highs[i] > last_high:
+            trends.append('Uptrend')
+        elif last_low is not None and lows[i] < last_low:
+            trends.append('Downtrend')
+        else:
+            trends.append('Sideways')
+
+    cur_trend = trends[-1]
+    start_idx = n - 1
+    while start_idx > 0 and trends[start_idx - 1] == cur_trend:
+        start_idx -= 1
+    # 추세전환 기준가: Downtrend → 이탈 기준이 된 저점, Uptrend → 돌파 기준이 된 고점
+    if cur_trend == 'Downtrend':
+        ref_price = last_low
+    elif cur_trend == 'Uptrend':
+        ref_price = last_high
+    else:
+        ref_price = None
+    return {'trend': cur_trend, 'start_date': dates[start_idx], 'ref_price': ref_price}
+
+
+def get_stock_trend(stock_code: str, trade_date: str, access_token: str, app_key: str, app_secret: str) -> dict | None:
+    """종목의 현재 추세(Uptrend/Downtrend/Sideways) 조회 (지그재그 고점/저점 기준, simul_server.py 동일 로직)."""
+    daily = get_kis_daily_chart_full(stock_code, trade_date, access_token, app_key, app_secret)
+    if not daily:
+        return None
+    dates  = [d["date"]        for d in daily]
+    highs  = [d["high_price"]  for d in daily]
+    lows   = [d["low_price"]   for d in daily]
+    closes = [d["close_price"] for d in daily]
+    return _calc_peak_trough_trend(highs, closes, lows, dates)
+
+
 # ─────────────────────────────────────────
 # 시뮬레이션 DB 업데이트 함수 (실제 주문 없음)
 # ─────────────────────────────────────────
@@ -624,7 +680,6 @@ def get_kis_1min_from_datetime_simul(
         print(f"[시뮬] [{stock_name}-{stock_code}] 전일 일봉 미존재")
         return signals
 
-    prev_low    = prev_day_info['low_price']
     prev_volume = prev_day_info['volume']
     prev_close  = prev_day_info['close_price']
     upper_limit = get_valid_sell_price(int(prev_close * 1.30))
@@ -647,6 +702,12 @@ def get_kis_1min_from_datetime_simul(
         if df.empty:
             print(f"⚠️ [{stock_name}-{stock_code}] 분봉 없음")
             return signals
+
+        _stock_trend_pre  = get_stock_trend(stock_code, trade_date, access_token, app_key, app_secret)
+        _trend_down       = bool(_stock_trend_pre and _stock_trend_pre.get('trend') == 'Downtrend')
+        _trend_ref_price  = (_stock_trend_pre.get('ref_price') or 0) if _stock_trend_pre else 0
+        if verbose and _trend_down:
+            print(f"[시뮬] {stock_name}[{stock_code}] 현재 하락추세({_stock_trend_pre.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
 
         _df_tv = df.copy()
         _df_tv["거래량"] = _df_tv["거래량"].astype(int)
@@ -683,7 +744,7 @@ def get_kis_1min_from_datetime_simul(
             "tenmin_vol_ok": None, "tenmin_vol": 0, "tenmin_avg_vol": 0,
             "reason": "", "signal_type": "", "effective_stop": 0, "order_price": 0,
         }
-        prevlow_warn_last_key      = _alert_keys.get("prevlow_warn")
+        downtrend_warn_last_key    = _alert_keys.get("downtrend_warn")
         breakdown_notify_last_key  = _alert_keys.get("L")
         _market_sell_checked       = False
 
@@ -848,16 +909,16 @@ def get_kis_1min_from_datetime_simul(
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
                                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 감지 → 10분봉 저가 대기")        
 
-                # 전일저가 이탈 사전 경고 + 시장 흐름 분석
-                _prevlow_start   = "101000" if (trade_date.endswith("0102") or trade_date.endswith("1119")) else "091000"
-                _prevlow_warn_end = "161000" if trade_date.endswith("1119") else "151000"
-                if current_time >= _prevlow_start and current_time < _prevlow_warn_end and prev_low is not None and close_price < prev_low and int(prev_volume / 2) < acml_vol:
+                # 하락추세 이탈 사전 경고
+                _downtrend_start   = "101000" if (trade_date.endswith("0102") or trade_date.endswith("1119")) else "091000"
+                _downtrend_warn_end = "161000" if trade_date.endswith("1119") else "151000"
+                if current_time >= _downtrend_start and current_time < _downtrend_warn_end and _trend_down:
                         _cur_key_str = current_10min_key.strftime("%Y%m%d%H%M")
-                        if prevlow_warn_last_key is None:
-                            prevlow_warn_last_key = _cur_key_str
-                            _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "prevlow_warn", prevlow_warn_last_key)
-                            # 시장 흐름 기반 분석 (루프 전 조회한 _mkt_trend_pre 재사용)
+                        if downtrend_warn_last_key is None:
+                            downtrend_warn_last_key = _cur_key_str
+                            _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "downtrend_warn", downtrend_warn_last_key)
                             _w_mkt_data = _mkt_trend_pre
+                            # 해당 종목의 코스피 또는 코스닥의 단기 하락
                             if _w_mkt_data:
                                 _w_stk_mkt       = _stk_mkt_pre
                                 _w_allow_ratio   = _w_mkt_data['market_ratio']
@@ -870,25 +931,24 @@ def get_kis_1min_from_datetime_simul(
                                 _w_long_key  = 'kospi_long' if _w_stk_mkt == 'KOSPI' else 'kosdak_long'
                                 _w_mid_str   = '상승' if _w_mkt_data.get(_w_mid_key)  == '03' else '하락'
                                 _w_long_str  = '상승' if _w_mkt_data.get(_w_long_key) == '05' else '하락'
+
+                                # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
                                 if _w_excess_invest > 0 and close_price > 0:
                                     _w_qty      = min(int(basic_qty), max(1, (_w_excess_invest + close_price - 1) // close_price))
                                     _w_plan     = round(_w_qty / basic_qty * 100) if basic_qty > 0 else 100
-                                    _w_reason   = (f" [사전경고] 현재가:{close_price:,}원 전일저가:{prev_low:,}원 이탈"
+                                    _w_reason   = (f" [사전경고] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
                                                    f" 시장흐름[{_w_stk_mkt}] 중기:{_w_mid_str}/장기:{_w_long_str}"
                                                    f" 시장허용:{_w_allow_ratio}%({_w_allowed_invest:,}원)"
                                                    f" 현재진행:{_w_invest_pct}%({_w_total_invested:,}원)"
                                                    f" 초과:{_w_excess_invest:,}원→{_w_plan}% 매도 필요")
                                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_w_reason}")
 
-                # 15:10 이후 시장 흐름 기반 매도 체크
-                # 조건: trail_tp='L', 전일저가 이탈 + 거래량 조건, 1회만 수행
-                _prevlow_cutoff = "161000" if trade_date.endswith("1119") else "151000"
-                if (not breakdown_wait["active"] and not sell_trigger
-                        and current_time >= _prevlow_cutoff and not _market_sell_checked
-                        and prev_low is not None and close_price < prev_low
-                        and prev_volume < acml_vol):
+                # 15:10 이후 하락 추세 매도
+                _downtrend_cutoff = "161000" if trade_date.endswith("1119") else "151000"
+                if (not breakdown_wait["active"] and not sell_trigger and current_time >= _downtrend_cutoff and not _market_sell_checked and _trend_down):
                     _market_sell_checked = True
                     _mkt_data = _mkt_trend_pre
+                    # 해당 종목의 코스피 또는 코스닥의 단기 하락
                     if _mkt_data:
                         _stk_mkt        = _stk_mkt_pre
                         _allow_ratio    = _mkt_data['market_ratio']
@@ -902,6 +962,7 @@ def get_kis_1min_from_datetime_simul(
                         _mid_str        = '상승' if _mkt_data.get(_mid_key)  == '03' else '하락'
                         _long_str       = '상승' if _mkt_data.get(_long_key) == '05' else '하락'
 
+                        # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
                         if _excess_invest > 0 and close_price > 0:
                             # 초과금액 해소에 필요한 수량 (올림 나눗셈, 보유수량 상한)
                             _mkt_qty    = min(int(basic_qty), max(1, (_excess_invest + close_price - 1) // close_price))
@@ -911,7 +972,7 @@ def get_kis_1min_from_datetime_simul(
                             _u_qty      = basic_qty - _mkt_qty
                             _u_amt      = basic_price * _u_qty
                             _new_tp     = "4" if _mkt_qty >= basic_qty else "L"
-                            _mkt_reason = (f" [장종료전 매도] 현재가:{close_price:,}원 전일저가:{prev_low:,}원 이탈"
+                            _mkt_reason = (f" [장종료전 매도] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
                                            f" 시장흐름[{_stk_mkt}] 중기:{_mid_str}/장기:{_long_str}"
                                            f" 시장허용:{_allow_ratio}%({_allowed_invest:,}원)"
                                            f" 현재진행:{_invest_pct}%({_total_invested:,}원)"
@@ -943,7 +1004,7 @@ def get_kis_1min_from_datetime_simul(
                     trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
                     u_basic_qty  = basic_qty - trail_qty
                     u_basic_amt  = basic_price * u_basic_qty
-                    result = update_simul_daily_close(
+                    update_simul_daily_close(
                         nick, order_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
                         u_basic_qty, u_basic_amt, acct_no, 
                         stock_code, stock_name, start_date, start_time, "4",
@@ -2139,7 +2200,7 @@ def process_account_simul():
         for code in unique_codes:
             get_prev_day_info(code, today, ac['access_token'], ac['app_key'], ac['app_secret'], conn_acct)
             time.sleep(0.1)
-            get_kis_daily_chart_full(code, ac['access_token'], ac['app_key'], ac['app_secret'])
+            get_kis_daily_chart_full(code, today, ac['access_token'], ac['app_key'], ac['app_secret'])
             time.sleep(0.1)
 
         # 종목별 병렬 처리
@@ -2226,7 +2287,7 @@ def process_account_simul():
         # dly_acct_balance 시장흐름 값을 dly_acct_balance_simul 에 반영
         _sync_market_trend_to_simul(today, conn_acct, prev_tot_evlu_amt)
 
-        # 시장비율 기반 리밸런싱 시뮬레이션 (동일 수행일자 today 를 sim_date 로 동시 처리)
+        # 파동기준(trail_tp = 'L', trading_plan = 'h') 금일종가 전일 저가 이탈시 매도 - 시장비율 기반 리밸런싱 시뮬레이션 (동일 수행일자 today 를 sim_date 로 동시 처리)
         try:
             simulate_rebalance(ac, today)
         except Exception as e:
