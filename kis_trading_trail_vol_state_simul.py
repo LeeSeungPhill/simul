@@ -912,88 +912,112 @@ def get_kis_1min_from_datetime_simul(
                 # 하락추세 이탈 사전 경고
                 _downtrend_start   = "101000" if (trade_date.endswith("0102") or trade_date.endswith("1119")) else "091000"
                 _downtrend_warn_end = "161000" if trade_date.endswith("1119") else "151000"
-                if current_time >= _downtrend_start and current_time < _downtrend_warn_end and _trend_down:
-                        _cur_key_str = current_10min_key.strftime("%Y%m%d%H%M")
-                        if downtrend_warn_last_key is None:
-                            downtrend_warn_last_key = _cur_key_str
-                            _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "downtrend_warn", downtrend_warn_last_key)
-                            _w_mkt_data = _mkt_trend_pre
-                            # 해당 종목의 코스피 또는 코스닥의 단기 하락
-                            if _w_mkt_data:
-                                _w_stk_mkt       = _stk_mkt_pre
-                                _w_allow_ratio   = _w_mkt_data['market_ratio']
-                                _w_total_invested = _get_total_invested(trade_date, conn)
-                                _w_dnca_tot       = _w_mkt_data.get('dnca_tot_amt') or 0
-                                _w_allowed_invest = int(_w_dnca_tot * _w_allow_ratio / 100)
-                                _w_excess_invest  = _w_total_invested - _w_allowed_invest
-                                _w_invest_pct     = round(_w_total_invested / _w_dnca_tot * 100, 1) if _w_dnca_tot > 0 else 0
-                                _w_mid_key   = 'kospi_mid'  if _w_stk_mkt == 'KOSPI' else 'kosdak_mid'
-                                _w_long_key  = 'kospi_long' if _w_stk_mkt == 'KOSPI' else 'kosdak_long'
-                                _w_mid_str   = '상승' if _w_mkt_data.get(_w_mid_key)  == '03' else '하락'
-                                _w_long_str  = '상승' if _w_mkt_data.get(_w_long_key) == '05' else '하락'
+                if (current_time >= _downtrend_start and current_time < _downtrend_warn_end and _trend_down and close_price < _trend_ref_price):                        
+                    _cur_key_str = current_10min_key.strftime("%Y%m%d%H%M")
+                    if downtrend_warn_last_key is None:
+                        downtrend_warn_last_key = _cur_key_str
+                        _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "downtrend_warn", downtrend_warn_last_key)
+                        msg_warn = (
+                            f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[<code>{stock_code}</code>]"
+                            f" [사전경고] 종가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
+                        )
+                        print(msg_warn)                            
+                        # _w_mkt_data = _mkt_trend_pre
+                        # # 해당 종목의 코스피 또는 코스닥의 단기 하락
+                        # if _w_mkt_data:
+                        #     _w_stk_mkt       = _stk_mkt_pre
+                        #     _w_allow_ratio   = _w_mkt_data['market_ratio']
+                        #     _w_total_invested = _get_total_invested(trade_date, conn)
+                        #     _w_dnca_tot       = _w_mkt_data.get('dnca_tot_amt') or 0
+                        #     _w_allowed_invest = int(_w_dnca_tot * _w_allow_ratio / 100)
+                        #     _w_excess_invest  = _w_total_invested - _w_allowed_invest
+                        #     _w_invest_pct     = round(_w_total_invested / _w_dnca_tot * 100, 1) if _w_dnca_tot > 0 else 0
+                        #     _w_mid_key   = 'kospi_mid'  if _w_stk_mkt == 'KOSPI' else 'kosdak_mid'
+                        #     _w_long_key  = 'kospi_long' if _w_stk_mkt == 'KOSPI' else 'kosdak_long'
+                        #     _w_mid_str   = '상승' if _w_mkt_data.get(_w_mid_key)  == '03' else '하락'
+                        #     _w_long_str  = '상승' if _w_mkt_data.get(_w_long_key) == '05' else '하락'
 
-                                # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
-                                if _w_excess_invest > 0 and close_price > 0:
-                                    _w_qty      = min(int(basic_qty), max(1, (_w_excess_invest + close_price - 1) // close_price))
-                                    _w_plan     = round(_w_qty / basic_qty * 100) if basic_qty > 0 else 100
-                                    _w_reason   = (f" [사전경고] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
-                                                   f" 시장흐름[{_w_stk_mkt}] 중기:{_w_mid_str}/장기:{_w_long_str}"
-                                                   f" 시장허용:{_w_allow_ratio}%({_w_allowed_invest:,}원)"
-                                                   f" 현재진행:{_w_invest_pct}%({_w_total_invested:,}원)"
-                                                   f" 초과:{_w_excess_invest:,}원→{_w_plan}% 매도 필요")
-                                    print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_w_reason}")
+                        #     # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
+                        #     if _w_excess_invest > 0 and close_price > 0:
+                        #         _w_qty      = min(int(basic_qty), max(1, (_w_excess_invest + close_price - 1) // close_price))
+                        #         _w_plan     = round(_w_qty / basic_qty * 100) if basic_qty > 0 else 100
+                        #         _w_reason   = (f" [사전경고] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
+                        #                        f" 시장흐름[{_w_stk_mkt}] 중기:{_w_mid_str}/장기:{_w_long_str}"
+                        #                        f" 시장허용:{_w_allow_ratio}%({_w_allowed_invest:,}원)"
+                        #                        f" 현재진행:{_w_invest_pct}%({_w_total_invested:,}원)"
+                        #                        f" 초과:{_w_excess_invest:,}원→{_w_plan}% 매도 필요")
+                        #         print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_w_reason}")
 
                 # 15:10 이후 하락 추세 매도
                 _downtrend_cutoff = "161000" if trade_date.endswith("1119") else "151000"
-                if (not breakdown_wait["active"] and not sell_trigger and current_time >= _downtrend_cutoff and not _market_sell_checked and _trend_down):
+                if (not breakdown_wait["active"] and not sell_trigger and current_time >= _downtrend_cutoff and _trend_down and close_price < _trend_ref_price and not _market_sell_checked):
                     _market_sell_checked = True
-                    _mkt_data = _mkt_trend_pre
-                    # 해당 종목의 코스피 또는 코스닥의 단기 하락
-                    if _mkt_data:
-                        _stk_mkt        = _stk_mkt_pre
-                        _allow_ratio    = _mkt_data['market_ratio']
-                        _total_invested = _get_total_invested(trade_date, conn)
-                        _dnca_tot       = _mkt_data.get('dnca_tot_amt') or 0
-                        _allowed_invest = int(_dnca_tot * _allow_ratio / 100)
-                        _excess_invest  = _total_invested - _allowed_invest
-                        _invest_pct     = round(_total_invested / _dnca_tot * 100, 1) if _dnca_tot > 0 else 0
-                        _mid_key        = 'kospi_mid'  if _stk_mkt == 'KOSPI' else 'kosdak_mid'
-                        _long_key       = 'kospi_long' if _stk_mkt == 'KOSPI' else 'kosdak_long'
-                        _mid_str        = '상승' if _mkt_data.get(_mid_key)  == '03' else '하락'
-                        _long_str       = '상승' if _mkt_data.get(_long_key) == '05' else '하락'
 
-                        # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
-                        if _excess_invest > 0 and close_price > 0:
-                            # 초과금액 해소에 필요한 수량 (올림 나눗셈, 보유수량 상한)
-                            _mkt_qty    = min(int(basic_qty), max(1, (_excess_invest + close_price - 1) // close_price))
-                            _trail_plan = round(_mkt_qty / basic_qty * 100) if basic_qty > 0 else 100
-                            _mkt_amt    = close_price * _mkt_qty
-                            _mkt_rate   = round((close_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0
-                            _u_qty      = basic_qty - _mkt_qty
-                            _u_amt      = basic_price * _u_qty
-                            _new_tp     = "4" if _mkt_qty >= basic_qty else "L"
-                            _mkt_reason = (f" [장종료전 매도] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
-                                           f" 시장흐름[{_stk_mkt}] 중기:{_mid_str}/장기:{_long_str}"
-                                           f" 시장허용:{_allow_ratio}%({_allowed_invest:,}원)"
-                                           f" 현재진행:{_invest_pct}%({_total_invested:,}원)"
-                                           f" 초과:{_excess_invest:,}원→{_trail_plan}% 매도 진행")
-                            print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_mkt_reason}")
-                            print(f" 현재가:{close_price:,}원 | 매도:{_mkt_qty:,}주 | 잔여:{_u_qty:,}주 | 수익률:{_mkt_rate:+.2f}%")
-                            update_simul_daily_close(
-                                nick, close_price, _mkt_qty, _mkt_amt, _mkt_rate,
-                                str(_trail_plan), _u_qty, _u_amt, acct_no,
-                                stock_code, stock_name, start_date, start_time, _new_tp,
-                                row['시간'].replace(':', '') + '00', _mkt_reason, conn
-                            )
-                            signals.append({
-                                "signal_type":  "MARKET_TREND_SELL",
-                                "종목코드":      stock_code, "발생일자": row["일자"],
-                                "발생시간":      row["시간"], "시장": _stk_mkt,
-                                "허용비율":      _allow_ratio,
-                                "현재투자비율":  _invest_pct,
-                                "매도수량":      int(_mkt_qty), "매도가격": close_price,
-                            })
-                            return signals
+                    _mkt_reason = f"[장종료전] 종가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
+                    print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_mkt_reason}")
+                    
+                    update_simul_daily_close(
+                        nick, close_price, basic_qty, close_price * basic_qty, round((close_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0,
+                        "100", basic_qty, close_price * basic_qty, acct_no,
+                        stock_code, stock_name, start_date, start_time, "4",
+                        row['시간'].replace(':', '') + '00', _mkt_reason, conn
+                    )
+                    signals.append({
+                        "signal_type": "DOWNTREND_SELL",
+                        "종목코드": stock_code,
+                        "발생일자": row["일자"],
+                        "발생시간": row["시간"],
+                        "매도수량": basic_qty,
+                        "매도가격": close_price,
+                    })
+                    return signals
+                    # _mkt_data = _mkt_trend_pre
+                    # # 해당 종목의 코스피 또는 코스닥의 단기 하락
+                    # if _mkt_data:
+                    #     _stk_mkt        = _stk_mkt_pre
+                    #     _allow_ratio    = _mkt_data['market_ratio']
+                    #     _total_invested = _get_total_invested(trade_date, conn)
+                    #     _dnca_tot       = _mkt_data.get('dnca_tot_amt') or 0
+                    #     _allowed_invest = int(_dnca_tot * _allow_ratio / 100)
+                    #     _excess_invest  = _total_invested - _allowed_invest
+                    #     _invest_pct     = round(_total_invested / _dnca_tot * 100, 1) if _dnca_tot > 0 else 0
+                    #     _mid_key        = 'kospi_mid'  if _stk_mkt == 'KOSPI' else 'kosdak_mid'
+                    #     _long_key       = 'kospi_long' if _stk_mkt == 'KOSPI' else 'kosdak_long'
+                    #     _mid_str        = '상승' if _mkt_data.get(_mid_key)  == '03' else '하락'
+                    #     _long_str       = '상승' if _mkt_data.get(_long_key) == '05' else '하락'
+
+                    #     # 트레이딩 매입금액이 시징비율허용된 금액보다 큰 경우
+                    #     if _excess_invest > 0 and close_price > 0:
+                    #         # 초과금액 해소에 필요한 수량 (올림 나눗셈, 보유수량 상한)
+                    #         _mkt_qty    = min(int(basic_qty), max(1, (_excess_invest + close_price - 1) // close_price))
+                    #         _trail_plan = round(_mkt_qty / basic_qty * 100) if basic_qty > 0 else 100
+                    #         _mkt_amt    = close_price * _mkt_qty
+                    #         _mkt_rate   = round((close_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0
+                    #         _u_qty      = basic_qty - _mkt_qty
+                    #         _u_amt      = basic_price * _u_qty
+                    #         _new_tp     = "4" if _mkt_qty >= basic_qty else "L"
+                    #         _mkt_reason = (f" [장종료전 매도] 현재가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
+                    #                        f" 시장흐름[{_stk_mkt}] 중기:{_mid_str}/장기:{_long_str}"
+                    #                        f" 시장허용:{_allow_ratio}%({_allowed_invest:,}원)"
+                    #                        f" 현재진행:{_invest_pct}%({_total_invested:,}원)"
+                    #                        f" 초과:{_excess_invest:,}원→{_trail_plan}% 매도 진행")
+                    #         print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_mkt_reason}")
+                    #         print(f" 현재가:{close_price:,}원 | 매도:{_mkt_qty:,}주 | 잔여:{_u_qty:,}주 | 수익률:{_mkt_rate:+.2f}%")
+                    #         update_simul_daily_close(
+                    #             nick, close_price, _mkt_qty, _mkt_amt, _mkt_rate,
+                    #             str(_trail_plan), _u_qty, _u_amt, acct_no,
+                    #             stock_code, stock_name, start_date, start_time, _new_tp,
+                    #             row['시간'].replace(':', '') + '00', _mkt_reason, conn
+                    #         )
+                    #         signals.append({
+                    #             "signal_type":  "MARKET_TREND_SELL",
+                    #             "종목코드":      stock_code, "발생일자": row["일자"],
+                    #             "발생시간":      row["시간"], "시장": _stk_mkt,
+                    #             "허용비율":      _allow_ratio,
+                    #             "현재투자비율":  _invest_pct,
+                    #             "매도수량":      int(_mkt_qty), "매도가격": close_price,
+                    #         })
+                    #         return signals
 
                 # 매도 실행
                 if sell_trigger:
