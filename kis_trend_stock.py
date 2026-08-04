@@ -168,6 +168,14 @@ def _fetch_daily_ohlcv(access_token, app_key, app_secret, code):
     except Exception:
         return []
     
+def _format_date(yyyymmdd) -> str:
+    """'YYYYMMDD' → 'YYYY/MM/DD'. 파싱 실패 시 원본 그대로 반환."""
+    try:
+        return datetime.strptime(str(yyyymmdd), "%Y%m%d").strftime("%Y/%m/%d")
+    except (ValueError, TypeError):
+        return yyyymmdd
+
+
 def get_stock_trend(stock_code: str, access_token: str, app_key: str, app_secret: str) -> dict | None:
     """종목의 현재 추세(Uptrend/Downtrend/Sideways) 조회"""
     rows = _fetch_daily_ohlcv(access_token, app_key, app_secret, stock_code)
@@ -206,12 +214,13 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
         _trend_up = bool(stock_trend_info and stock_trend_info.get('trend') == 'Uptrend')
         _trend_down = bool(stock_trend_info and stock_trend_info.get('trend') == 'Downtrend')
         _trend_ref_price = (stock_trend_info.get('ref_price') or 0) if stock_trend_info else 0
+        _start_date = _format_date(stock_trend_info.get('start_date'))
         if _trend_up:
-            print(f"{name}[{code}] 현재 상승추세({stock_trend_info.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
-            out.append({"code": code, "name": name, "trend" : "상승", "start_date" : stock_trend_info.get('start_date'), "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
+            print(f"{name}[{code}] 현재 상승추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
+            out.append({"code": code, "name": name, "trend" : "상승", "start_date" : _start_date, "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
         elif _trend_down:
-            print(f"{name}[{code}] 현재 하락추세({stock_trend_info.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")            
-            out.append({"code": code, "name": name, "trend" : "하락", "start_date" : stock_trend_info.get('start_date'), "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
+            print(f"{name}[{code}] 현재 하락추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
+            out.append({"code": code, "name": name, "trend" : "하락", "start_date" : _start_date, "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
         
     return out
 
@@ -276,9 +285,12 @@ def process_account(nick):
             time.sleep(0.3)
 
         if holdings:
-            summary_text = (
-                f"📊 [{nick}] 상승추세 {up_cnt}건, 하락추세 {down_cnt}건\n"                
-            )
+            _trend_parts = []
+            if up_cnt >= 1:
+                _trend_parts.append(f"상승추세 {up_cnt}건")
+            if down_cnt >= 1:
+                _trend_parts.append(f"하락추세 {down_cnt}건")
+            summary_text = f"📊 [{nick}] 추세동향 {', '.join(_trend_parts)}\n"
             send_telegram(token, chat_id, summary_text)
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")
@@ -299,7 +311,7 @@ if __name__ == "__main__":
     if _is_business:
 
         # nickname_list = ['phills2', 'phills75', 'yh480825', 'mamalong', 'phills13', 'phills15', 'worry106']
-        nickname_list = ['phills2']
+        nickname_list = ['phills13']
 
         # 7개 계좌 병렬 처리
         with ThreadPoolExecutor(max_workers=len(nickname_list)) as account_executor:
