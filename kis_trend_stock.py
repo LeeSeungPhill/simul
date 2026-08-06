@@ -193,7 +193,7 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
     cur.execute("""
         SELECT code, name FROM "stockBalance_stock_balance" WHERE acct_no = %s AND proc_yn = 'Y' AND COALESCE(eval_sum, 0) > 0
         UNION
-        SELECT code, name FROM public."interestItem_interest_item" WHERE acct_no = %s AND code NOT IN ('0001', '1001')
+        SELECT code, name FROM public."interestItem_interest_item" WHERE acct_no = %s AND code NOT IN ('0001', '1001') AND proc_yn = 'Y'
     """, (str(acct_no),str(acct_no),))
     rows = cur.fetchall()
     cur.close()
@@ -311,7 +311,7 @@ if __name__ == "__main__":
     if _is_business:
 
         # nickname_list = ['phills2', 'phills75', 'yh480825', 'mamalong', 'phills13', 'phills15', 'worry106']
-        nickname_list = ['phills13']
+        nickname_list = ['yh480825']
 
         # 7개 계좌 병렬 처리
         with ThreadPoolExecutor(max_workers=len(nickname_list)) as account_executor:
