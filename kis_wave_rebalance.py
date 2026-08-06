@@ -124,8 +124,7 @@ def inquire_price(access_token, app_key, app_secret, code):
     return resp.APIResp(res).getBody().output
 
 
-def order_cash(buy_flag, access_token, app_key, app_secret, acct_no, stock_code,
-               ord_dvsn, order_qty, order_price, excg_id="KRX"):
+def order_cash(buy_flag, access_token, app_key, app_secret, acct_no, stock_code, ord_dvsn, order_qty, order_price, excg_id="KRX"):
     """현금 주문. 매도=False(TTTC0011U). 시장가=ord_dvsn '01', order_price '0'."""
     tr_id = "TTTC0012U" if buy_flag else "TTTC0011U"
     params = {"CANO": acct_no, "ACNT_PRDT_CD": "01", "PDNO": stock_code,
@@ -503,27 +502,14 @@ def load_fund_signals(conn, acct_no):
         SELECT prvs_rcdl_excc_amt, market_ratio,
                kospi_short, kospi_mid, kospi_long,
                kosdak_short, kosdak_mid, kosdak_long,
-               (SELECT SUM(A.eval_sum) FROM "stockBalance_stock_balance" A RIGHT OUTER JOIN 
-	            (
-	                SELECT code, name
-	                FROM "stockBalance_stock_balance"  
-	                WHERE acct_no = %s
-	                AND proc_yn = 'Y'
-	                AND trading_plan = 'h'
-	                AND COALESCE(eval_sum, 0) > 0
-	                UNION
-	                SELECT code, name
-	                FROM trading_trail
-	                WHERE acct_no = %s
-	                AND trail_day = prev_business_day_char(CURRENT_DATE)
-	                AND COALESCE(basic_qty, 0) > 0
-	                AND trail_tp = 'L'
-	            ) B ON A.code = B.code             
-        		WHERE acct_no = %s 
-        		AND proc_yn = 'Y'
-        		AND COALESCE(eval_sum, 0) > 0) AS total_eval
+               (SELECT SUM(A.eval_sum) 
+                FROM "stockBalance_stock_balance"
+	            WHERE acct_no = %s
+	            AND proc_yn = 'Y'
+	            AND trading_plan = 'h'
+	            AND COALESCE(eval_sum, 0) > 0) AS total_eval
         FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s
-    """, (str(acct_no),str(acct_no),str(acct_no),str(acct_no),))
+    """, (str(acct_no),str(acct_no),))
     r = cur.fetchone()
     cur.close()
     if not r:
@@ -547,26 +533,12 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
             A.eval_sum, 
             A.purchase_price,
             COALESCE(A.avail_amount, A.purchase_amount, 0) AS avail_qty
-        FROM "stockBalance_stock_balance" A RIGHT OUTER JOIN 
-            (
-                SELECT code, name
-                FROM "stockBalance_stock_balance"  
-                WHERE acct_no = %s
-                AND proc_yn = 'Y'
-                AND trading_plan = 'h'
-                AND COALESCE(eval_sum, 0) > 0
-                UNION
-                SELECT code, name
-                FROM trading_trail
-                WHERE acct_no = %s
-                AND trail_day = prev_business_day_char(CURRENT_DATE)
-                AND COALESCE(basic_qty, 0) > 0
-                AND trail_tp = 'L'
-            ) B ON A.code = B.code             
+        FROM "stockBalance_stock_balance" A 
         WHERE acct_no = %s 
         AND proc_yn = 'Y'
+        AND trading_plan = 'h'
         AND COALESCE(eval_sum, 0) > 0
-    """, (str(acct_no),str(acct_no),str(acct_no),))
+    """, (str(acct_no),))
     rows = cur.fetchall()
     cur.close()
     out = []
@@ -750,6 +722,126 @@ def is_business_day(check_date: datetime, conn) -> bool:
 
     return bool(result[0])
 
+# 일별주문체결조회
+def get_my_complete(access_token, app_key, app_secret, acct_no, code, order_no):
+
+    headers = {"Content-Type": "application/json",
+               "authorization": f"Bearer {access_token}",
+               "appKey": app_key,
+               "appSecret": app_secret,
+               "tr_id": "TTTC0081R",                            # (3개월이내) TTTC0081R, (3개월이전) CTSC9215R
+               "custtype": "P"}
+    params = {
+            'CANO': acct_no,                                    # 종합계좌번호 계좌번호 체계(8-2)의 앞 8자리
+            'ACNT_PRDT_CD':"01",                                # 계좌상품코드 계좌번호 체계(8-2)의 뒤 2자리
+            'SORT_DVSN': "01",                                  # 00: 최근 순, 01: 과거 순, 02: 최근 순
+            'INQR_STRT_DT': datetime.now().strftime('%Y%m%d'),  # 조회시작일(8자리)
+            'INQR_END_DT': datetime.now().strftime('%Y%m%d'),   # 조회종료일(8자리)
+            # 'INQR_STRT_DT': "20250522",  # 조회시작일(8자리)
+            # 'INQR_END_DT': "20250522",   # 조회종료일(8자리)
+            'SLL_BUY_DVSN_CD': "00",                            # 매도매수구분코드 00 : 전체 / 01 : 매도 / 02 : 매수
+            'PDNO': code,                                       # 종목번호(6자리) ""공란입력 시, 전체
+            'ORD_GNO_BRNO': "",                                 # 주문채번지점번호 ""공란입력 시, 전체
+            'ODNO': order_no,                                   # 주문번호 ""공란입력 시, 전체
+            'CCLD_DVSN': "00",                                  # 체결구분 00 전체, 01 체결, 02 미체결
+            'INQR_DVSN': "01",                                  # 조회구분 00 역순, 01 정순
+            'INQR_DVSN_1': "",                                  # 조회구분1 없음: 전체, 1: ELW, 2: 프리보드
+            'INQR_DVSN_3': "00",                                # 조회구분3 00 전체, 01 현금, 02 신용, 03 담보, 04 대주, 05 대여, 06 자기융자신규/상환, 07 유통융자신규/상환
+            'EXCG_ID_DVSN_CD': "ALL",                           # 거래소ID구분코드 KRX : KRX, NXT : NXT, SOR (Smart Order Routing) : SOR, ALL : 전체
+            'CTX_AREA_NK100': "",
+            'CTX_AREA_FK100': ""
+    }
+    PATH = "uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+    URL = f"{URL_BASE}/{PATH}"
+
+    try:
+        res = requests.get(URL, headers=headers, params=params, verify=False, timeout=10)
+        ar = resp.APIResp(res)
+
+        # 응답에 output1이 있는지 확인
+        body = ar.getBody()
+        return body.output1 if hasattr(body, 'output1') else []
+
+    except Exception as e:
+        print("일별주문체결조회 중 오류 발생:", e)
+        return []
+
+# 주식주문(정정취소)
+def order_cancel_revice(access_token, app_key, app_secret, acct_no, cncl_dv, order_no, order_qty, order_price, excg_id):
+
+    headers = {"Content-Type": "application/json",
+               "authorization": f"Bearer {access_token}",
+               "appKey": app_key,
+               "appSecret": app_secret,
+               "tr_id": "TTTC0013U",            # TTTC0013U[실전투자], VTTC0013U[모의투자]
+               "custtype": "P"
+    }
+    params = {
+               "CANO": acct_no,
+               "ACNT_PRDT_CD": "01",
+               "KRX_FWDG_ORD_ORGNO": "06010",
+               "ORGN_ODNO": order_no,
+               "ORD_DVSN": "00" if int(order_price) > 0 else "01",  # 지정가 : 00, 시장가 : 01
+               "RVSE_CNCL_DVSN_CD": cncl_dv,    # 정정 : 01, 취소 : 02
+               "ORD_QTY": str(order_qty),
+               "ORD_UNPR": str(order_price),
+               "QTY_ALL_ORD_YN": "Y",           # 전량 : Y, 일부 : N
+               "EXCG_ID_DVSN_CD": excg_id       # 한국거래소 : KRX, 대체거래소 (넥스트레이드) : NXT, SOR (Smart Order Routing) : SOR
+    }
+    PATH = "uapi/domestic-stock/v1/trading/order-rvsecncl"
+    URL = f"{URL_BASE}/{PATH}"
+    res = requests.post(URL, data=json.dumps(params), headers=headers, verify=False, timeout=10)
+    ar = resp.APIResp(res)
+    if ar.isOK():
+        return ar.getBody().output
+    else:
+        ar.printError()
+        return None
+
+# 매도 주문정보 존재시 취소 처리
+def sell_order_cancel_proc(access_token, app_key, app_secret, acct_no, code):
+
+    result_msgs = []
+
+    try:
+        # 일별주문체결 조회
+        output1 = get_my_complete(access_token, app_key, app_secret, acct_no, code, '')
+
+        if len(output1) > 0:
+
+            tdf = pd.DataFrame(output1)
+            d = tdf[['odno', 'prdt_name', 'ord_dt', 'ord_tmd', 'orgn_odno', 'sll_buy_dvsn_cd', 'sll_buy_dvsn_cd_name', 'pdno', 'ord_qty', 'ord_unpr', 'avg_prvs', 'cncl_yn', 'tot_ccld_amt', 'tot_ccld_qty', 'rmn_qty', 'cncl_cfrm_qty', 'excg_id_dvsn_cd']]
+            order_no = 0
+
+            for i, name in enumerate(d.index):
+
+                # 매도주문 잔여수량 존재시
+                if d['sll_buy_dvsn_cd'][i] == "01":
+
+                    # 잔량 존재 AND cncl_yn != 'Y' (Y=취소, 그 외 공백/N 모두 취소 아님으로 처리)
+                    if int(d['rmn_qty'][i]) > 0 and d['cncl_yn'][i] != 'Y':
+                        order_no = int(d['odno'][i])
+                        ord_excg_id = d['excg_id_dvsn_cd'][i] if 'excg_id_dvsn_cd' in d.columns else None
+
+                        # 주문취소
+                        c = order_cancel_revice(access_token, app_key, app_secret, acct_no, "02", str(order_no), "0", "0", "KRX")
+                        if c is not None and c['ODNO'] != "":
+                            print("매도주문취소 완료")
+
+                        else:
+                            print("매도주문취소 실패")
+                            msg = f"[{d['prdt_name'][i]}] 매도주문취소 실패"
+                            result_msgs.append(msg)
+
+    except Exception as e:
+        print('매도주문취소 오류.', e)
+        msg = f"[{code}] 매도주문취소 오류 - {str(e)}"
+        result_msgs.append(msg)
+
+    final_message = result_msgs if result_msgs else "success"
+
+    return final_message
+
 def process_account(nick):
     """계좌별 독립 DB 연결로 병렬 처리"""
     conn = db.connect(conn_string)
@@ -786,32 +878,34 @@ def process_account(nick):
                    f"(strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
                    f"priority={h.get('sell_priority',0):.0f}) 예상 {h['current_price']*qty:,}원")
 
-            ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"],
-                            str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
-            if ar.isOK():
-                out = ar.getBody().output
-                order_no = (out or {}).get("ODNO", "")
-                print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
-                record_sell(conn, acct_no, h, qty, h["current_price"], str(int(order_no)), h['current_price']*qty)
-                sold_cnt += 1
-                sold_amt += h['current_price'] * qty
+            # 매도 주문정보 존재시 취소 처리
+            if sell_order_cancel_proc(ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"],) == 'success':
+                # 매도 : 시장가 주문
+                ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
+                if ar.isOK():
+                    out = ar.getBody().output
+                    order_no = (out or {}).get("ODNO", "")
+                    print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
+                    record_sell(conn, acct_no, h, qty, h["current_price"], str(int(order_no)), h['current_price']*qty)
+                    sold_cnt += 1
+                    sold_amt += h['current_price'] * qty
 
-                telegram_text = (
-                    f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
-                    f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
-                    f"매도산정기준:{h.get('sell_priority',0):.0f} 주문번호:{str(int(order_no))}"
-                )
-                send_telegram(token, chat_id, telegram_text)
-            else:
-                print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
-                fail_cnt += 1
+                    telegram_text = (
+                        f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
+                        f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
+                        f"매도산정기준:{h.get('sell_priority',0):.0f} 주문번호:{str(int(order_no))}"
+                    )
+                    send_telegram(token, chat_id, telegram_text)
+                else:
+                    print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
+                    fail_cnt += 1
 
-                telegram_text = (
-                    f"❌ [{nick}] 매도실패\n"
-                    f"{h['name']}[<code>{h['code']}</code>] {qty:,}주\n"
-                    f"{ar.getErrorCode()} {ar.getErrorMessage()}"
-                )
-                send_telegram(token, chat_id, telegram_text)
+                    telegram_text = (
+                        f"❌ [{nick}] 매도실패\n"
+                        f"{h['name']}[<code>{h['code']}</code>] {qty:,}주\n"
+                        f"{ar.getErrorCode()} {ar.getErrorMessage()}"
+                    )
+                    send_telegram(token, chat_id, telegram_text)
             time.sleep(0.3)
 
         if orders:
