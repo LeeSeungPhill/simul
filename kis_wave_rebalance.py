@@ -523,7 +523,7 @@ def load_fund_signals(conn, acct_no):
         		AND proc_yn = 'Y'
         		AND COALESCE(eval_sum, 0) > 0) AS total_eval
         FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s
-    """, (str(acct_no),))
+    """, (str(acct_no),str(acct_no),str(acct_no),str(acct_no),))
     r = cur.fetchone()
     cur.close()
     if not r:
