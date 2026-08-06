@@ -502,7 +502,26 @@ def load_fund_signals(conn, acct_no):
     cur.execute("""
         SELECT prvs_rcdl_excc_amt, market_ratio,
                kospi_short, kospi_mid, kospi_long,
-               kosdak_short, kosdak_mid, kosdak_long
+               kosdak_short, kosdak_mid, kosdak_long,
+               (SELECT SUM(A.eval_sum) FROM "stockBalance_stock_balance" A RIGHT OUTER JOIN 
+	            (
+	                SELECT code, name
+	                FROM "stockBalance_stock_balance"  
+	                WHERE acct_no = %s
+	                AND proc_yn = 'Y'
+	                AND trading_plan = 'h'
+	                AND COALESCE(eval_sum, 0) > 0
+	                UNION
+	                SELECT code, name
+	                FROM trading_trail
+	                WHERE acct_no = %s
+	                AND trail_day = prev_business_day_char(CURRENT_DATE)
+	                AND COALESCE(basic_qty, 0) > 0
+	                AND trail_tp = 'L'
+	            ) B ON A.code = B.code             
+        		WHERE acct_no = %s 
+        		AND proc_yn = 'Y'
+        		AND COALESCE(eval_sum, 0) > 0) AS total_eval
         FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s
     """, (str(acct_no),))
     r = cur.fetchone()
@@ -513,7 +532,8 @@ def load_fund_signals(conn, acct_no):
     mr = float(r[1]) if r[1] is not None else None
     sig = {"kospi_short": r[2], "kospi_mid": r[3], "kospi_long": r[4],
            "kosdak_short": r[5], "kosdak_mid": r[6], "kosdak_long": r[7]}
-    return cash, sig, mr
+    total_eval = int(r[8]) if r[8] is not None else 0
+    return cash, sig, mr, total_eval
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
@@ -743,7 +763,7 @@ def process_account(nick):
         token        = ac['bot_token2']
         chat_id      = ac['chat_id']
 
-        cash, _sig, mr = load_fund_signals(conn, acct_no)
+        cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         if not holdings:
             print(f"[{nick}] 홀딩 대상 없음 → 스킵")
@@ -756,9 +776,8 @@ def process_account(nick):
             return quality_score_from_history(conn, code)
 
         orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
-
-        print(f"[{nick}] 리밸런싱 cash={cash:,} market_ratio={mr} "
-              f"초과={excess:,} 매도후보={len(orders)}건")
+        total_excess = total_excess(cash, total_eval, mr)
+        print(f"[{nick}] 리밸런싱 평가총액={total_eval:,}원, 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={total_excess:,}원, 현금전환={excess:,}원 매도대상={len(orders)}건")
 
         sold_cnt, fail_cnt, sold_amt = 0, 0, 0
         for h, qty in orders:
@@ -772,17 +791,15 @@ def process_account(nick):
             if ar.isOK():
                 out = ar.getBody().output
                 order_no = (out or {}).get("ODNO", "")
-                print(f"  ✅ 매도접수 {tag} ODNO={order_no}")
-                record_sell(conn, acct_no, h, qty, h["current_price"], order_no, h['current_price']*qty)
+                print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
+                record_sell(conn, acct_no, h, qty, h["current_price"], str(int(order_no)), h['current_price']*qty)
                 sold_cnt += 1
                 sold_amt += h['current_price'] * qty
 
                 telegram_text = (
-                    f"✅ [{nick}] 시장비율 리밸런싱 매도\n"
-                    f"{h['name']}[<code>{h['code']}</code>] {qty:,}주 @ {h['current_price']:,}원 "
-                    f"= {h['current_price']*qty:,}원\n"
-                    f"strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
-                    f"priority={h.get('sell_priority',0):.0f} ODNO={order_no}"
+                    f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
+                    f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
+                    f"매도산정기준:{h.get('sell_priority',0):.0f} 주문번호:{str(int(order_no))}"
                 )
                 send_telegram(token, chat_id, telegram_text)
             else:
@@ -799,8 +816,7 @@ def process_account(nick):
 
         if orders:
             summary_text = (
-                f"📊 [{nick}] 시장비율 리밸런싱 완료\n"
-                f"성공 {sold_cnt}건 / 실패 {fail_cnt}건, 총 매도금액 {sold_amt:,}원"
+                f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요:{total_excess:,}원, 총 매도금액: {sold_amt:,}원"
             )
             send_telegram(token, chat_id, summary_text)
     except Exception as e:
