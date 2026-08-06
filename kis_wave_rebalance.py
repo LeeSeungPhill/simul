@@ -857,8 +857,11 @@ def process_account(nick):
 
         cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
+        transfer_cash_need = total_excess(cash, total_eval, mr)
         if not holdings:
-            print(f"[{nick}] 홀딩 대상 없음 → 스킵")
+            print(f"[{nick}] 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
+            telegram_text = (f"✅ [{nick}] 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원 홀딩 대상 없음")
+            send_telegram(token, chat_id, telegram_text)
             return
 
         cache = {}
@@ -868,8 +871,7 @@ def process_account(nick):
             return quality_score_from_history(conn, code)
 
         orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
-        total_excess = total_excess(cash, total_eval, mr)
-        print(f"[{nick}] 리밸런싱 평가총액={total_eval:,}원, 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={total_excess:,}원, 현금전환={excess:,}원 매도대상={len(orders)}건")
+        print(f"[{nick}] 리밸런싱 평가총액={total_eval:,}원, 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원, 현금전환={excess:,}원 매도대상={len(orders)}건")
 
         sold_cnt, fail_cnt, sold_amt = 0, 0, 0
         for h, qty in orders:
@@ -910,7 +912,7 @@ def process_account(nick):
 
         if orders:
             summary_text = (
-                f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요:{total_excess:,}원, 총 매도금액: {sold_amt:,}원"
+                f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요:{transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원"
             )
             send_telegram(token, chat_id, summary_text)
     except Exception as e:
