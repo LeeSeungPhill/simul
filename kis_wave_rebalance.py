@@ -859,8 +859,8 @@ def process_account(nick):
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         transfer_cash_need = total_excess(cash, total_eval, mr)
         if not holdings:
-            print(f"[{nick}] 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
-            telegram_text = (f"✅ [{nick}] 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원 홀딩 대상 없음")
+            print(f"[{nick}] 시장비율({int(mr):,}%) 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
+            telegram_text = (f"✅ [{nick}] 시장비율({int(mr):,}%) 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음")
             send_telegram(token, chat_id, telegram_text)
             return
 
@@ -871,50 +871,52 @@ def process_account(nick):
             return quality_score_from_history(conn, code)
 
         orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
-        print(f"[{nick}] 리밸런싱 평가총액={total_eval:,}원, 현금={cash:,}원, 시장비율={int(mr):,}%, 현금전환필요={transfer_cash_need:,}원, 현금전환={excess:,}원 매도대상={len(orders)}건")
+        print(f"[{nick}] 시장비율({int(mr):,}%) 리밸런싱 평가총액: {total_eval:,}원, 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원, 현금전환: {excess:,}원 매도대상: {len(orders)}건")
 
-        sold_cnt, fail_cnt, sold_amt = 0, 0, 0
-        for h, qty in orders:
+        if len(orders) > 1:
+            sold_cnt, fail_cnt, sold_amt = 0, 0, 0
+            for h, qty in orders:
 
-            tag = (f"{h['name']}[{h['code']}] {qty}주 "
-                   f"(strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
-                   f"priority={h.get('sell_priority',0):.0f}) 예상 {h['current_price']*qty:,}원")
+                tag = (f"{h['name']}[{h['code']}] {qty}주 "
+                    f"(strength={h.get('strength',0):.0f} quality={h.get('quality',0):.0f} "
+                    f"priority={h.get('sell_priority',0):.0f}) 예상 {h['current_price']*qty:,}원")
 
-            # 매도 주문정보 존재시 취소 처리
-            if sell_order_cancel_proc(ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"],) == 'success':
-                # 매도 : 시장가 주문
-                ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
-                if ar.isOK():
-                    out = ar.getBody().output
-                    order_no = (out or {}).get("ODNO", "")
-                    print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
-                    record_sell(conn, acct_no, h, qty, h["current_price"], str(int(order_no)), h['current_price']*qty)
-                    sold_cnt += 1
-                    sold_amt += h['current_price'] * qty
+                # 매도 주문정보 존재시 취소 처리
+                if sell_order_cancel_proc(ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"],) == 'success':
+                    # 매도 : 시장가 주문
+                    ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
+                    if ar.isOK():
+                        out = ar.getBody().output
+                        order_no = (out or {}).get("ODNO", "")
+                        print(f"  ✅ 매도접수 {tag} 주문번호={str(int(order_no))}")
+                        record_sell(conn, acct_no, h, qty, h["current_price"], str(int(order_no)), h['current_price']*qty)
+                        sold_cnt += 1
+                        sold_amt += h['current_price'] * qty
 
-                    telegram_text = (
-                        f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
-                        f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
-                        f"매도산정기준:{h.get('sell_priority',0):.0f} 주문번호:{str(int(order_no))}"
-                    )
-                    send_telegram(token, chat_id, telegram_text)
-                else:
-                    print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
-                    fail_cnt += 1
+                        telegram_text = (
+                            f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
+                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
+                            f"매도산정기준: {h.get('sell_priority',0):.0f} 주문번호: {str(int(order_no))}"
+                        )
+                        send_telegram(token, chat_id, telegram_text)
+                    else:
+                        print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
+                        fail_cnt += 1
 
-                    telegram_text = (
-                        f"❌ [{nick}] 매도실패\n"
-                        f"{h['name']}[<code>{h['code']}</code>] {qty:,}주\n"
-                        f"{ar.getErrorCode()} {ar.getErrorMessage()}"
-                    )
-                    send_telegram(token, chat_id, telegram_text)
-            time.sleep(0.3)
+                        telegram_text = (
+                            f"❌ [{nick}] 매도실패\n"
+                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주\n"
+                            f"{ar.getErrorCode()} {ar.getErrorMessage()}"
+                        )
+                        send_telegram(token, chat_id, telegram_text)
+                time.sleep(0.3)
 
-        if orders:
-            summary_text = (
-                f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요:{transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원"
-            )
-            send_telegram(token, chat_id, summary_text)
+            if orders:
+                summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
+                send_telegram(token, chat_id, summary_text)
+        else:
+            summary_text = (f"📊 [{nick}] 시장비율({int(mr):,}%) 평가총액: {total_eval:,}원, 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원")
+            send_telegram(token, chat_id, summary_text)        
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")
         send_telegram(token, chat_id, f"⚠️ [{nick}] 계좌 처리 오류\n{e}")
