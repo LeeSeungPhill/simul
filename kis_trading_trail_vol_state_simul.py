@@ -1903,7 +1903,6 @@ def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="ne
                 FROM  public.trading_trail_simul
                 WHERE acct_no = %s
                 AND trading_plan = 'h'
-                AND trail_tp = 'L'
                 AND COALESCE(basic_qty, 0) > 0
                 AND trail_day = %s
             ) B 
@@ -2311,7 +2310,7 @@ def process_account_simul():
         # dly_acct_balance 시장흐름 값을 dly_acct_balance_simul 에 반영
         _sync_market_trend_to_simul(today, conn_acct, prev_tot_evlu_amt)
 
-        # 파동기준(trail_tp = 'L', trading_plan = 'h') 금일종가 전일 저가 이탈시 매도 - 시장비율 기반 리밸런싱 시뮬레이션 (동일 수행일자 today 를 sim_date 로 동시 처리)
+        # 파동기준(trading_plan = 'h') 금일종가 전일 저가 이탈시 매도 - 시장비율 기반 리밸런싱 시뮬레이션 (동일 수행일자 today 를 sim_date 로 동시 처리)
         try:
             simulate_rebalance(ac, today)
         except Exception as e:

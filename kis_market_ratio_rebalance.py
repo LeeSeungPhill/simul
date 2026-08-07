@@ -527,26 +527,12 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
             A.eval_sum, 
             A.purchase_price,
             COALESCE(A.avail_amount, A.purchase_amount, 0) AS avail_qty
-        FROM "stockBalance_stock_balance" A RIGHT OUTER JOIN 
-            (
-                SELECT code, name
-                FROM "stockBalance_stock_balance"  
-                WHERE acct_no = %s
-                AND proc_yn = 'Y'
-                AND trading_plan = 'h'
-                AND COALESCE(eval_sum, 0) > 0
-                UNION
-                SELECT code, name
-                FROM trading_trail
-                WHERE acct_no = %s
-                AND trail_day = prev_business_day_char(CURRENT_DATE)
-                AND COALESCE(basic_qty, 0) > 0
-                AND trail_tp = 'L'
-            ) B ON A.code = B.code             
+        FROM "stockBalance_stock_balance" A 
         WHERE acct_no = %s 
         AND proc_yn = 'Y'
+        AND trading_plan = 'h'
         AND COALESCE(eval_sum, 0) > 0
-    """, (str(acct_no),str(acct_no),str(acct_no),))
+    """, (str(acct_no),))
     rows = cur.fetchall()
     cur.close()
     out = []
@@ -807,7 +793,6 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
                 FROM  public.trading_trail_simul
                 WHERE acct_no = %s
                 AND trading_plan = 'h'
-                AND trail_tp = 'L'
                 AND COALESCE(basic_qty, 0) > 0
                 AND trail_day = %s
             ) B 

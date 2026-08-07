@@ -506,7 +506,7 @@ def load_fund_signals(conn, acct_no):
                 FROM "stockBalance_stock_balance"
 	            WHERE acct_no = %s
 	            AND proc_yn = 'Y'
-	            AND trading_plan = 'h'
+	            AND (trading_plan = 'h' OR trading_plan IS NULL)
 	            AND COALESCE(eval_sum, 0) > 0) AS total_eval
         FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s
     """, (str(acct_no),str(acct_no),))
