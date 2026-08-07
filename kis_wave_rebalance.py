@@ -502,7 +502,7 @@ def load_fund_signals(conn, acct_no):
         SELECT prvs_rcdl_excc_amt, market_ratio,
                kospi_short, kospi_mid, kospi_long,
                kosdak_short, kosdak_mid, kosdak_long,
-               (SELECT SUM(A.eval_sum) 
+               (SELECT SUM(eval_sum) 
                 FROM "stockBalance_stock_balance"
 	            WHERE acct_no = %s
 	            AND proc_yn = 'Y'
