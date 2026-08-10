@@ -704,9 +704,12 @@ def get_kis_1min_from_datetime_simul(
             return signals
 
         _stock_trend_pre  = get_stock_trend(stock_code, trade_date, access_token, app_key, app_secret)
+        _trend_up         = bool(_stock_trend_pre and _stock_trend_pre.get('trend') == 'Uptrend')
         _trend_down       = bool(_stock_trend_pre and _stock_trend_pre.get('trend') == 'Downtrend')
         _trend_ref_price  = (_stock_trend_pre.get('ref_price') or 0) if _stock_trend_pre else 0
-        if verbose and _trend_down:
+        if verbose and _trend_up:
+            print(f"{stock_name}[{stock_code}] 현재 상승추세({_stock_trend_pre.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
+        elif verbose and _trend_down:
             print(f"[시뮬] {stock_name}[{stock_code}] 현재 하락추세({_stock_trend_pre.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
 
         _df_tv = df.copy()
@@ -770,8 +773,8 @@ def get_kis_1min_from_datetime_simul(
                     if high_price >= int(prev_close * 1.15):
                         has_reached_15pct = True
 
-                # 추세이탈가 즉시 매도
-                if exit_price and int(exit_price) > 0 and close_price <= int(exit_price):
+                # 상승추세 아닌 추세이탈가 즉시 매도
+                if not _trend_up and exit_price and int(exit_price) > 0 and close_price <= int(exit_price):
                     _ep         = int(exit_price)
                     i_trail_plan = trail_plan if trail_plan else "100"
                     trail_qty   = int(basic_qty * int(i_trail_plan) * 0.01)
@@ -810,7 +813,7 @@ def get_kis_1min_from_datetime_simul(
                                                            "reason": "", "signal_type": "",
                                                            "effective_stop": 0, "order_price": 0})
                     if breakdown_wait["active"] and breakdown_wait["tenmin_low"] is not None:
-                        if low_price < breakdown_wait["tenmin_low"]:
+                        if not _trend_up and low_price < breakdown_wait["tenmin_low"]:
                             sell_trigger     = True
                             sell_reason      = (breakdown_wait["reason"]
                                                 + f" → 10분봉저가({breakdown_wait['tenmin_low']:,}) 이탈 확정")
@@ -838,7 +841,7 @@ def get_kis_1min_from_datetime_simul(
                             safety_margin_L           = int(basic_price * 1.10)
                             peak_to_safety_L          = peak_high_tenmin - safety_margin_L
                             effective_retracement_rate_L = 0.3 if row["dt"].time() >= dt_time(14, 30) else 0.5
-                            if (peak_high_tenmin > safety_margin_L
+                            if not _trend_up and (peak_high_tenmin > safety_margin_L
                                     and peak_to_safety_L >= int(safety_margin_L * 0.05)):
                                 peak_sell_threshold_L = peak_high_tenmin - int(peak_to_safety_L * effective_retracement_rate_L)
                                 if tenmin_close_b < peak_sell_threshold_L:
@@ -851,7 +854,7 @@ def get_kis_1min_from_datetime_simul(
                             _safety_m = int(basic_price * 1.10)
                             _p2s      = peak_high_tenmin - _safety_m
                             _cond_b_capable = peak_high_tenmin > _safety_m and _p2s >= int(_safety_m * 0.05)
-                            if not _cond_b_capable:
+                            if not _trend_up and not _cond_b_capable:
                                 fixed_stop = int(stop_price) if stop_price else 0
                                 if fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
                                      # 시장 단기 하락인 경우 매도 진행
@@ -882,7 +885,7 @@ def get_kis_1min_from_datetime_simul(
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 15%달성·수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 → 10분봉 저가 대기")
                     else:
                         fixed_stop = int(stop_price) if stop_price else 0
-                        if fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
+                        if not _trend_up and fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
                             # 시장 단기 하락인 경우 매도 진행
                             if _short_market_down:
                                 breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
