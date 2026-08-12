@@ -432,12 +432,12 @@ def _calc_supply_score(ohlcv, inv, price, ssts=None):
 # ────────────────────────────────────────────────────────────────────────────
 # 코어 로직 (순수 함수 — 라이브/백테스트 공용, 주입 가능)
 # ────────────────────────────────────────────────────────────────────────────
-def total_excess(cash, total_eval, market_ratio):
+def total_excess(trading_cash, total_eval, market_ratio):
     """base = 현금 + 전체 평가금액, target = base*market_ratio/100, excess = 평가금액-target(>0 이면 매도).
     KOSPI/KOSDAQ 구분 없이 트레이딩풀 전체를 대상으로 한 단일 초과분(원)."""
     if market_ratio is None or total_eval <= 0:
         return 0
-    base = total_eval + cash
+    base = total_eval + trading_cash
     return int(max(0, total_eval - base * market_ratio / 100))
 
 
@@ -472,14 +472,14 @@ def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty
     return orders
 
 
-def build_rebalance_orders(holdings, cash, market_ratio, strength_fn, quality_fn):
+def build_rebalance_orders(holdings, trading_cash, market_ratio, strength_fn, quality_fn):
     """코어 엔진. holdings 각 dict: code,name,eval_sum,current_price,avail_qty,purchase_price.
     strength_fn(code)->0~100, quality_fn(code)->0~100 주입.
     quality(invest_point)는 참고용으로 h['quality']에 기록만 하고 sell_priority 산정에는 쓰지 않음.
     KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 sell_priority 단일 순위로 배분.
     반환: ([(holding, qty), ...], excess)"""
     total_eval = sum(h["eval_sum"] for h in holdings)
-    excess = total_excess(cash, total_eval, market_ratio)
+    excess = total_excess(trading_cash, total_eval, market_ratio)
     if excess <= 0:
         return [], excess
 
@@ -519,11 +519,12 @@ def load_fund_signals(conn, acct_no):
     sig = {"kospi_short": r[2], "kospi_mid": r[3], "kospi_long": r[4],
            "kosdak_short": r[5], "kosdak_mid": r[6], "kosdak_long": r[7]}
     total_eval = int(r[8]) if r[8] is not None else 0
-    return cash, sig, mr, total_eval
+    trading_cash = 20,000,000 - total_eval if (20,000,000 - total_eval) < cash else cash
+    return trading_cash, sig, mr, total_eval
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
-    """trading_plan == 'h', trail_tp = 'L' 대상"""
+    """trading_plan == 'h' 대상"""
     cur = conn.cursor()
     cur.execute("""
         SELECT 
@@ -855,12 +856,12 @@ def process_account(nick):
         token        = ac['bot_token2']
         chat_id      = ac['chat_id']
 
-        cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
+        trading_cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
-        transfer_cash_need = total_excess(cash, total_eval, mr)
+        transfer_cash_need = total_excess(trading_cash, total_eval, mr)
         if not holdings:
-            print(f"[{nick}] 시장비율({int(mr):,}%) 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
-            telegram_text = (f"✅ [{nick}] 시장비율({int(mr):,}%) 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음")
+            print(f"[{nick}] 시장비율({int(mr):,}%) 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
+            telegram_text = (f"✅ [{nick}] 시장비율({int(mr):,}%) 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음")
             send_telegram(token, chat_id, telegram_text)
             return
 
@@ -870,8 +871,8 @@ def process_account(nick):
         def quality_fn(code):
             return quality_score_from_history(conn, code)
 
-        orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
-        print(f"[{nick}] 시장비율({int(mr):,}%) 리밸런싱 평가총액: {total_eval:,}원, 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원, 현금전환: {excess:,}원 매도대상: {len(orders)}건")
+        orders, excess = build_rebalance_orders(holdings, trading_cash, mr, strength_fn, quality_fn)
+        print(f"[{nick}] 시장비율({int(mr):,}%) 리밸런싱 평가총액: {total_eval:,}원, 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원, 현금전환: {excess:,}원 매도대상: {len(orders)}건")
 
         if len(orders) > 1:
             sold_cnt, fail_cnt, sold_amt = 0, 0, 0
@@ -915,7 +916,7 @@ def process_account(nick):
                 summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
                 send_telegram(token, chat_id, summary_text)
         else:
-            summary_text = (f"📊 [{nick}] 시장비율({int(mr):,}%) 평가총액: {total_eval:,}원, 현금: {cash:,}원, 현금전환필요: {transfer_cash_need:,}원")
+            summary_text = (f"📊 [{nick}] 시장비율({int(mr):,}%) 평가총액: {total_eval:,}원, 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원")
             send_telegram(token, chat_id, summary_text)        
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")
