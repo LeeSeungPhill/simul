@@ -519,7 +519,7 @@ def load_fund_signals(conn, acct_no):
     sig = {"kospi_short": r[2], "kospi_mid": r[3], "kospi_long": r[4],
            "kosdak_short": r[5], "kosdak_mid": r[6], "kosdak_long": r[7]}
     total_eval = int(r[8]) if r[8] is not None else 0
-    trading_cash = 20,000,000 - total_eval if (20,000,000 - total_eval) < cash else cash
+    trading_cash = 20000000 - total_eval if (20000000 - total_eval) < cash else cash
     return trading_cash, sig, mr, total_eval
 
 
