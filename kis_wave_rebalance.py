@@ -873,7 +873,7 @@ def process_account(nick):
                 summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 트레이딩 현금전환: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
                 send_telegram(token, chat_id, summary_text)
         else:
-            summary_text = (f"📊 [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 미존재")
+            summary_text = (f"📊 [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 매도 대상 미존재")
             send_telegram(token, chat_id, summary_text)        
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")
