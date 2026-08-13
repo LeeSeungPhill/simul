@@ -21,8 +21,6 @@ kis_market_ratio_rebalance.py
 정책 결정 (합의)
   - 우선 '일 단위(horizon='D')'만 처리.
   - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
-    (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
-     두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
 
 주의
   - kis_holding_item_total.py 는 import 시 배치가 자동 실행되므로 import 하지 않고
@@ -57,9 +55,7 @@ today = datetime.now().strftime("%Y%m%d")
 
 # 리밸런싱 가중치 (튜닝 포인트)
 W_SUPPLY      = 0.5    # strength = W_SUPPLY*수급
-W_CHART       = 0.5    # strength = W_CHART*차트 
-TOP_CUT       = 70     # sell_priority(100 - strength) 이 값 이상이면 종목당 전량 매도 허용, 아니면 일 최대 70%
-PER_NAME_CAP  = 0.5    # 종목당 1일 최대 매도 비중 (평가금액 대비)
+W_CHART       = 0.5    # strength = W_CHART*차트
 
 requests.packages.urllib3.disable_warnings()     # verify=False 경고 억제
 _daily_cache_lock = threading.Lock()
@@ -449,47 +445,42 @@ def sell_priority(strength):
 
 def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty"):
     """bucket: sell_priority 계산된 holding dict 리스트. excess 만큼 순위 충전식 배분.
-    각 holding dict 는 'sell_priority','eval_sum',cur_price_key,avail_key 를 가진다.
+    각 holding dict 는 'sell_priority',cur_price_key,avail_key 를 가진다.
+    수량 산출은 reservebot.py menu_num=='TRMAR' 과 동일한 방식: 종목당 상한 없이
+    qty = min(avail, ceil(잔여필요금액/현재가))로 필요금액을 채울 때까지 순위대로 배정.
     반환: [(holding, qty), ...]"""
     ranked = sorted(bucket, key=lambda h: -h["sell_priority"])
-    orders, filled = [], 0
+    orders, remain = [], excess
     for h in ranked:
-        if filled >= excess:
+        if remain <= 0:
             break
         cur = h[cur_price_key]
         avail = int(h.get(avail_key, 0) or 0)
         if cur <= 0 or avail <= 0:
             continue
-        # 매도 할당 금액 : 수급 또는 차트 strength > 70 이면 전체 물량, 아니면 절반 물량
-        cap_amt = h["eval_sum"] if h["sell_priority"] >= TOP_CUT else h["eval_sum"] * PER_NAME_CAP
-        # 시장비율 초과하여 감축할 금액(cap_amt 와 초과한 물량에서 차감한 물량 중 최소 금액)
-        amt = min(cap_amt, excess - filled)
-        qty = int(amt // cur)
-        qty = min(qty, avail)
+        qty = min(avail, math.ceil(remain / cur))
         if qty > 0:
             orders.append((h, qty))
-            filled += qty * cur
+            remain -= qty * cur
     return orders
 
 
-def build_rebalance_orders(holdings, trading_cash, market_ratio, strength_fn, quality_fn):
+def build_rebalance_orders(holdings, excess, strength_fn):
     """코어 엔진. holdings 각 dict: code,name,eval_sum,current_price,avail_qty,purchase_price.
-    strength_fn(code)->0~100, quality_fn(code)->0~100 주입.
-    quality(invest_point)는 참고용으로 h['quality']에 기록만 하고 sell_priority 산정에는 쓰지 않음.
+    strength_fn(code)->0~100 주입.
+    excess(=transfer_cash_need)는 호출측에서 트레이딩풀 전체 total_eval 기준 total_excess() 로 산정해 그대로 전달.
+    holdings 는 전일 저가 이탈 등으로 필터링된 매도 후보 서브셋이므로, 여기서 total_eval 을
+    holdings 로만 다시 구하면 전체 풀 기준 필요금액과 어긋나 과소 매도가 발생한다.
     KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 sell_priority 단일 순위로 배분.
-    반환: ([(holding, qty), ...], excess)"""
-    total_eval = sum(h["eval_sum"] for h in holdings)
-    excess = total_excess(trading_cash, total_eval, market_ratio)
+    반환: [(holding, qty), ...]"""
     if excess <= 0:
-        return [], excess
+        return []
 
     for h in holdings:
         st = strength_fn(h["code"])
-        ql = quality_fn(h["code"])
-        h["strength"], h["quality"] = st, ql
+        h["strength"] = st
         h["sell_priority"] = sell_priority(st)      # 수급점수, 차트점수 기반 매도 우선 순위
-        # h["sell_priority"] = sell_priority(ql)      # 성장트렌드, 영업이익증감률, 예상실적 상승 대비 밴드하단 위치여부, 목표주가 대비 상승여력 기반 매도 우선 순위
-    return allocate(holdings, excess), excess
+    return allocate(holdings, excess)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -567,39 +558,6 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
                         "purchase_price": int(float(pur_p or 0)),
                         "avail_qty": int(avail or 0)})
     return out
-
-
-def quality_score_from_history(conn, code, as_of=None):
-    """analysis_history 정량필드 → 0~100 성장/가치 점수 (기준③).
-    as_of(YYYYMMDD) 지정 시 point-in-time(그 이하 최신)로 조회."""
-    cur = conn.cursor()
-    if as_of:
-        cur.execute("""
-            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
-            FROM analysis_history
-            WHERE stock_code = %s AND run_at <= %s::date + interval '1 day'
-            ORDER BY id DESC LIMIT 1
-        """, (code, as_of))
-    else:
-        cur.execute("""
-            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
-            FROM analysis_history
-            WHERE stock_code = %s ORDER BY id DESC LIMIT 1
-        """, (code,))
-    r = cur.fetchone()
-    cur.close()
-    if not r:
-        return 45.0   # 자료 없음 → 중립
-    trend, fwd, vsig, band, upside = r
-    # 성장트렌드
-    base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70, "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
-    # 영업이익증감률 : ±10
-    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5
-    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑
-    val_adj = 15 if vsig else 0
-    # 목표주가 대비 상승여력 : 0~10
-    up_adj = max(0, min(40, float(upside or 0))) * 0.25
-    return max(0.0, min(100.0, base + fwd_adj + val_adj + up_adj))
 
 
 def record_sell(conn, acct_no, h, qty, est_price, order_no, sell_amt):
@@ -859,22 +817,21 @@ def process_account(nick):
         trading_cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         transfer_cash_need = total_excess(trading_cash, total_eval, mr)
+        filtered_tot_evlu = trading_cash + total_eval
+        current_ratio_v = 100 - (trading_cash / filtered_tot_evlu * 100)
         if not holdings:
-            print(f"[{nick}] 시장비율({int(mr):,}%) 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음 → 스킵")
-            telegram_text = (f"✅ [{nick}] 시장비율({int(mr):,}%) 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원 홀딩 대상 없음")
+            print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 없음 → 스킵")
+            telegram_text = (f"✅ [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 없음")
             send_telegram(token, chat_id, telegram_text)
             return
 
         cache = {}
         strength_fn = _make_strength_fn(ac, cache)
 
-        def quality_fn(code):
-            return quality_score_from_history(conn, code)
+        orders = build_rebalance_orders(holdings, transfer_cash_need, strength_fn)
+        print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 매도대상: {len(orders)}건")
 
-        orders, excess = build_rebalance_orders(holdings, trading_cash, mr, strength_fn, quality_fn)
-        print(f"[{nick}] 시장비율({int(mr):,}%) 리밸런싱 평가총액: {total_eval:,}원, 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원, 현금전환: {excess:,}원 매도대상: {len(orders)}건")
-
-        if len(orders) > 1:
+        if len(orders) > 0:
             sold_cnt, fail_cnt, sold_amt = 0, 0, 0
             for h, qty in orders:
 
@@ -896,7 +853,7 @@ def process_account(nick):
 
                         telegram_text = (
                             f"✅ [{nick}] 시장비율({int(mr):,}%) 리밸런싱 매도\n"
-                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주*{h['current_price']:,}원={h['current_price']*qty:,}원\n"
+                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주 * {h['current_price']:,}원 = {h['current_price']*qty:,}원\n"
                             f"매도산정기준: {h.get('sell_priority',0):.0f} 주문번호: {str(int(order_no))}"
                         )
                         send_telegram(token, chat_id, telegram_text)
@@ -906,17 +863,17 @@ def process_account(nick):
 
                         telegram_text = (
                             f"❌ [{nick}] 매도실패\n"
-                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주\n"
+                            f"{h['name']}[<code>{h['code']}</code>] {qty:,}주 * {h['current_price']:,}원 = {h['current_price']*qty:,}원\n"
                             f"{ar.getErrorCode()} {ar.getErrorMessage()}"
                         )
                         send_telegram(token, chat_id, telegram_text)
                 time.sleep(0.3)
 
             if orders:
-                summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 현금전환필요: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
+                summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 트레이딩 현금전환: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
                 send_telegram(token, chat_id, summary_text)
         else:
-            summary_text = (f"📊 [{nick}] 시장비율({int(mr):,}%) 평가총액: {total_eval:,}원, 현금: {trading_cash:,}원, 현금전환필요: {transfer_cash_need:,}원")
+            summary_text = (f"📊 [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 미존재")
             send_telegram(token, chat_id, summary_text)        
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")
