@@ -16,6 +16,7 @@ import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import kis_api_resp as resp
+import math
 
 # ─────────────────────────────────────────
 # 설정
@@ -1684,79 +1685,43 @@ def sell_priority(strength):
 
 def allocate(bucket, excess, cur_price_key="current_price", avail_key="avail_qty"):
     """bucket: sell_priority 계산된 holding dict 리스트. excess 만큼 순위 충전식 배분.
-    각 holding dict 는 'sell_priority','eval_sum',cur_price_key,avail_key 를 가진다.
+    각 holding dict 는 'sell_priority',cur_price_key,avail_key 를 가진다.
+    수량 산출은 reservebot.py menu_num=='TRMAR' 과 동일한 방식: 종목당 상한 없이
+    qty = min(avail, ceil(잔여필요금액/현재가))로 필요금액을 채울 때까지 순위대로 배정.
     반환: [(holding, qty), ...]"""
     ranked = sorted(bucket, key=lambda h: -h["sell_priority"])
-    orders, filled = [], 0
+    orders, remain = [], excess
     for h in ranked:
-        if filled >= excess:
+        if remain <= 0:
             break
         cur = h[cur_price_key]
         avail = int(h.get(avail_key, 0) or 0)
         if cur <= 0 or avail <= 0:
             continue
-        # 매도 할당 금액 : 수급 또는 차트 strength > 70 이면 전체 물량, 아니면 절반 물량
-        cap_amt = h["eval_sum"] if h["sell_priority"] >= TOP_CUT else h["eval_sum"] * PER_NAME_CAP
-        # 시장비율 초과하여 감축할 금액(cap_amt 와 초과한 물량에서 차감한 물량 중 최소 금액)
-        amt = min(cap_amt, excess - filled)
-        qty = int(amt // cur)
-        qty = min(qty, avail)
+        qty = min(avail, math.ceil(remain / cur))
         if qty > 0:
             orders.append((h, qty))
-            filled += qty * cur
+            remain -= qty * cur
     return orders
 
 
-def build_rebalance_orders(holdings, cash, market_ratio, strength_fn, quality_fn):
+def build_rebalance_orders(holdings, excess, strength_fn):
     """코어 엔진. holdings 각 dict: code,name,eval_sum,current_price,avail_qty,purchase_price.
-    strength_fn(code)->0~100, quality_fn(code)->0~100 주입.
-    quality(invest_point)는 참고용으로 h['quality']에 기록만 하고 sell_priority 산정에는 쓰지 않음.
+    strength_fn(code)->0~100 주입.
+    excess(=transfer_cash_need)는 호출측에서 트레이딩풀 전체 total_eval 기준 total_excess() 로 산정해 그대로 전달.
+    holdings 는 전일 저가 이탈 등으로 필터링된 매도 후보 서브셋이므로, 여기서 total_eval 을
+    holdings 로만 다시 구하면 전체 풀 기준 필요금액과 어긋나 과소 매도가 발생한다.
     KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 sell_priority 단일 순위로 배분.
-    반환: ([(holding, qty), ...], excess)"""
-    total_eval = sum(h["eval_sum"] for h in holdings)
-    excess = total_excess(cash, total_eval, market_ratio)
+    반환: [(holding, qty), ...]"""
     if excess <= 0:
-        return [], excess
+        return []
 
     for h in holdings:
         st = strength_fn(h["code"])
-        ql = quality_fn(h["code"])
-        h["strength"], h["quality"] = st, ql
+        h["strength"] = st
         h["sell_priority"] = sell_priority(st)      # 수급점수, 차트점수 기반 매도 우선 순위
-    return allocate(holdings, excess), excess
+    return allocate(holdings, excess)
 
-
-def quality_score_from_history(conn, code, as_of=None):
-    """analysis_history 정량필드 → 0~100 성장/가치 점수 (기준③).
-    as_of(YYYYMMDD) 지정 시 point-in-time(그 이하 최신)로 조회."""
-    cur = conn.cursor()
-    if as_of:
-        cur.execute("""
-            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
-            FROM analysis_history
-            WHERE stock_code = %s AND run_at <= %s::date + interval '1 day'
-            ORDER BY id DESC LIMIT 1
-        """, (code, as_of))
-    else:
-        cur.execute("""
-            SELECT growth_trend, op_yoy_forward, value_signal, band_position, target_upside_pct
-            FROM analysis_history
-            WHERE stock_code = %s ORDER BY id DESC LIMIT 1
-        """, (code,))
-    r = cur.fetchone()
-    cur.close()
-    if not r:
-        return 45.0   # 자료 없음 → 중립
-    trend, fwd, vsig, band, upside = r
-    # 성장트렌드
-    base = {"실적 턴어라운드(적자→흑자 전환 예상)": 90, "성장 가속": 85, "성장 지속": 70, "실적 개선(저점 통과 추정)": 60, "역성장/둔화": 25}.get(trend, 45)
-    # 영업이익증감률 : ±10
-    fwd_adj = max(-20, min(20, float(fwd or 0))) * 0.5
-    # 예상실적 상승 대비 밴드하단 주가 위치 : 저평가+실적↑
-    val_adj = 15 if vsig else 0
-    # 목표주가 대비 상승여력 : 0~10
-    up_adj = max(0, min(40, float(upside or 0))) * 0.25
-    return max(0.0, min(100.0, base + fwd_adj + val_adj + up_adj))
 
 # ────────────────────────────────────────────────────────────────────────────
 # 점수 계산용 데이터 fetch (simul_server 복제)
@@ -1958,7 +1923,7 @@ def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="ne
                     (
                         SELECT SUM(balance_amt)
                         FROM public.dly_trading_balance_simul
-                        WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y'
+                        WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y' AND COALESCE(balance_qty, 0) > 0
                     ),
                     (
                         SELECT COALESCE(SUM((trail_price - basic_price)*trail_qty), 0)
@@ -1966,20 +1931,27 @@ def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="ne
                         WHERE acct_no = 'SIMUL' AND trail_day = %s
                         AND trail_tp IN ('3','4')
                         AND trail_price > 0 AND trail_qty > 0
+                    ),
+                    (
+                        SELECT SUM(balance_amt + value_amt) 
+                        FROM dly_trading_balance_simul
+                        WHERE acct_no = %s AND balance_day = %s AND use_yn = 'Y' AND COALESCE(balance_qty, 0) > 0
                     )
                 FROM dly_acct_balance_simul
                 WHERE acct = %s AND dt < %s ORDER BY dt DESC LIMIT 1
-            """, (dly_acct, sim_date, sim_date, dly_acct, prev_date))
+            """, (dly_acct, sim_date, sim_date, dly_acct, sim_date, dly_acct, prev_date))
             pt_row                  = cur.fetchone()
             prev_excc               = int(pt_row[0]) if pt_row else None
             prev_pchs               = int(pt_row[1]) if pt_row else 0
             pchs_amt                = int(pt_row[2]) if pt_row else 0
             total_profit_loss_amt   = int(pt_row[3]) if pt_row else 0
+            total_eval              = int(pt_row[4]) if pt_row else 0
 
             # 자본기준: dly_acct_balance_simul 의 prev_excc(전일 예수금) 사용 (없으면 TOTAL_INVEST_BASE 폴백)
             base_capital  = prev_excc if prev_excc is not None else TOTAL_INVEST_BASE
             # 예수금 = 전일 예수금 - 매수총액 + 전일 매수총액 + 실현손익
             cash = base_capital - pchs_amt + prev_pchs + total_profit_loss_amt
+            current_ratio_v = 100 - (cash / (cash + total_eval) * 100)
 
             # 3) 그 날의 시장비율 (실제 dly_acct_balance)
             cur.execute("""
@@ -1994,84 +1966,82 @@ def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="ne
             mr = sr[0]
             cur.close()
 
-            # 4) 점수 함수 (point-in-time)
-            def quality_fn(code):
-                return quality_score_from_history(conn, code, as_of=sim_date)
+            transfer_cash_need = total_excess(cash, total_eval, mr)
 
             cache = {}
             strength_fn = _make_strength_fn(phiils2_account, cache)
 
             # 5) 주문 산출
-            orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
+            orders = build_rebalance_orders(holdings, transfer_cash_need, strength_fn)
 
-            print(f"[SIMUL {sim_date}] 리밸런싱 cash={cash:,} mr={mr} "
-                f"초과={excess:,} 매도={len(orders)}건")
+            print(f"[SIMUL {sim_date}] 총 트레이딩 평가: {cash+total_eval:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 매도대상: {len(orders)}건")
 
-            # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
-            applied = []
-            for h, qty in orders:
-                sell_price = h["current_price"]
-                cur2 = conn.cursor()
-                cur2.execute("""
-                    SELECT basic_price, basic_qty, trail_dtm, trail_tp
-                    FROM trading_trail_simul
-                    WHERE acct_no = %s AND trail_day = %s AND code = %s
-                    AND trail_tp IN ('1','2','L','P')
-                    ORDER BY trail_dtm DESC LIMIT 1
-                """, (SIMUL_ACCT, sim_date, h["code"]))
-                row = cur2.fetchone()
-                if not row:
-                    print(f"  ⚠ {h['name']}[{h['code']}] 활성 trading_trail_simul 행 없음 → 리밸런싱 매도 스킵")
+            if len(orders) > 0:
+                # 6) 체결 반영 (종가 매도) → 기존 trading_trail_simul 활성 행 UPDATE
+                applied = []
+                for h, qty in orders:
+                    sell_price = h["current_price"]
+                    cur2 = conn.cursor()
+                    cur2.execute("""
+                        SELECT basic_price, basic_qty, trail_dtm, trail_tp
+                        FROM trading_trail_simul
+                        WHERE acct_no = %s AND trail_day = %s AND code = %s
+                        AND trail_tp IN ('1','2','L','P')
+                        ORDER BY trail_dtm DESC LIMIT 1
+                    """, (SIMUL_ACCT, sim_date, h["code"]))
+                    row = cur2.fetchone()
+                    if not row:
+                        print(f"  ⚠ {h['name']}[{h['code']}] 활성 trading_trail_simul 행 없음 → 리밸런싱 매도 스킵")
+                        cur2.close()
+                        continue
+                    basic_price, basic_qty, trail_dtm, cur_trail_tp = int(row[0]), int(row[1]), row[2], row[3]
+                    remaining_qty = basic_qty - qty
+                    new_trail_tp  = '4' if remaining_qty <= 0 else '3'
+                    new_basic_amt = basic_price * remaining_qty
+                    trail_rate    = round((sell_price - basic_price) / basic_price * 100, 2) if basic_price else 0.0
+                    pnl = int((sell_price - basic_price) * qty)
+
+                    cur2.execute("""
+                        UPDATE trading_trail_simul SET
+                            trail_price  = %s,
+                            trail_qty    = %s,
+                            trail_amt    = %s,
+                            trail_rate   = %s,
+                            trail_tp     = %s,
+                            proc_min     = %s,
+                            basic_qty    = %s,
+                            basic_amt    = %s,
+                            trade_result = %s,
+                            mod_dt       = %s
+                        WHERE acct_no = %s AND code = %s
+                        AND trail_day = %s AND trail_dtm = %s
+                        AND trail_tp IN ('1','2','L','P')
+                    """, (
+                        sell_price, qty, sell_price * qty, trail_rate,
+                        new_trail_tp, "152900",
+                        remaining_qty, new_basic_amt,
+                        f"시장비율 리밸런싱({horizon})", datetime.now(),
+                        SIMUL_ACCT, h["code"], sim_date, trail_dtm,
+                    ))
+                    cur2.execute("""
+                        UPDATE dly_trading_balance_simul
+                        SET balance_qty = balance_qty - %s,
+                            balance_amt = GREATEST(balance_amt - %s, 0),
+                            value_amt = %s,
+                            sell_qty = %s,
+                            mod_dt = %s
+                        WHERE acct_no = %s AND balance_day = %s AND code = %s
+                    """, (qty, basic_price * qty, pnl, qty, datetime.now(), dly_acct, sim_date, h["code"]))
+                    conn.commit()
                     cur2.close()
-                    continue
-                basic_price, basic_qty, trail_dtm, cur_trail_tp = int(row[0]), int(row[1]), row[2], row[3]
-                remaining_qty = basic_qty - qty
-                new_trail_tp  = '4' if remaining_qty <= 0 else '3'
-                new_basic_amt = basic_price * remaining_qty
-                trail_rate    = round((sell_price - basic_price) / basic_price * 100, 2) if basic_price else 0.0
-                pnl = int((sell_price - basic_price) * qty)
-
-                cur2.execute("""
-                    UPDATE trading_trail_simul SET
-                        trail_price  = %s,
-                        trail_qty    = %s,
-                        trail_amt    = %s,
-                        trail_rate   = %s,
-                        trail_tp     = %s,
-                        proc_min     = %s,
-                        basic_qty    = %s,
-                        basic_amt    = %s,
-                        trade_result = %s,
-                        mod_dt       = %s
-                    WHERE acct_no = %s AND code = %s
-                    AND trail_day = %s AND trail_dtm = %s
-                    AND trail_tp IN ('1','2','L','P')
-                """, (
-                    sell_price, qty, sell_price * qty, trail_rate,
-                    new_trail_tp, "152900",
-                    remaining_qty, new_basic_amt,
-                    f"시장비율 리밸런싱({horizon})", datetime.now(),
-                    SIMUL_ACCT, h["code"], sim_date, trail_dtm,
-                ))
-                cur2.execute("""
-                    UPDATE dly_trading_balance_simul
-                    SET balance_qty = balance_qty - %s,
-                        balance_amt = GREATEST(balance_amt - %s, 0),
-                        value_amt = %s,
-                        sell_qty = %s,
-                        mod_dt = %s
-                    WHERE acct_no = %s AND balance_day = %s AND code = %s
-                """, (qty, basic_price * qty, pnl, qty, datetime.now(), dly_acct, sim_date, h["code"]))
-                conn.commit()
-                cur2.close()
-                applied.append({"code": h["code"], "qty": qty, "sell_price": sell_price, "pnl": pnl})
-                print(f"  · 리밸런싱 매도 {h['name']}[{h['code']}] {qty}주 @ {sell_price:,} 손익 {pnl:,} "
-                    f"(quality={h.get('quality',0):.0f}, trail_tp {cur_trail_tp}→{new_trail_tp})")
+                    applied.append({"code": h["code"], "qty": qty, "sell_price": sell_price, "pnl": pnl})
+                    print(f"  · 리밸런싱 매도 {h['name']}[{h['code']}] {qty}주 @ {sell_price:,} 손익 {pnl:,} "
+                        f"(quality={h.get('quality',0):.0f}, trail_tp {cur_trail_tp}→{new_trail_tp})")
                 
-            return {"date": sim_date, "market_ratio": mr,
-                            "excess": excess,
-                            "orders": applied,
-                            "realized_pnl": sum(a["pnl"] for a in applied)}    
+                return {"date": sim_date, "market_ratio": mr,
+                                "excess": transfer_cash_need,
+                                "orders": applied,
+                                "realized_pnl": sum(a["pnl"] for a in applied)}    
 
         else:
             return {"date": sim_date, "market_ratio": "",
