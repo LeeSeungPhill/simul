@@ -207,8 +207,10 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
             app_secret
         )
 
+        _now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
         if stock_trend_info is None:
-            print(f"[{name}-{code}] 추세 데이터 미존재")
+            print(f"[{_now_str}] [{name}-{code}] 추세 데이터 미존재")
             continue
 
         _trend_up = bool(stock_trend_info and stock_trend_info.get('trend') == 'Uptrend')
@@ -216,10 +218,10 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
         _trend_ref_price = (stock_trend_info.get('ref_price') or 0) if stock_trend_info else 0
         _start_date = _format_date(stock_trend_info.get('start_date'))
         if _trend_up:
-            print(f"{name}[{code}] 현재 상승추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
+            print(f"[{_now_str}] {name}[{code}] 현재 상승추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
             out.append({"code": code, "name": name, "trend" : "상승", "start_date" : _start_date, "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
         elif _trend_down:
-            print(f"{name}[{code}] 현재 하락추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
+            print(f"[{_now_str}] {name}[{code}] 현재 하락추세({_start_date}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
             out.append({"code": code, "name": name, "trend" : "하락", "start_date" : _start_date, "trend_ref_price": int(stock_trend_info.get('ref_price') or 0)})
         
     return out

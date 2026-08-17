@@ -841,8 +841,14 @@ def process_account(nick):
 
                 # 매도 주문정보 존재시 취소 처리
                 if sell_order_cancel_proc(ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"],) == 'success':
-                    # 매도 : 시장가 주문
-                    ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
+                    # 매도 : 시장가 주문 (실패 시 최대 3회 재시도)
+                    for attempt in range(3):
+                        ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"], str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
+                        if ar.isOK():
+                            break
+                        if attempt < 2:
+                            print(f"  ⚠️ 매도재시도 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()} ({attempt + 1}/3)")
+                            time.sleep(0.5)
                     if ar.isOK():
                         out = ar.getBody().output
                         order_no = (out or {}).get("ODNO", "")
