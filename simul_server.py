@@ -3,6 +3,7 @@ import psycopg2 as db
 from datetime import datetime, timedelta
 import os
 import io
+import sys
 import subprocess
 import requests
 import json
@@ -719,6 +720,36 @@ def dashboard():
         return jsonify({'error': str(e)}), 500
 
 
+def _get_market_meta(code):
+    """KIS 현재가 조회로 시장구분(market)/규모(size)/업종(industry)/시가총액(mktcap) 산출.
+    stock_info() 와 투자관리(invest-mng) 조회가 공유하는 헬퍼. 실패 시 RuntimeError."""
+    ac = _get_api_account()
+    if not ac:
+        raise RuntimeError('API 계좌 정보 없음')
+    res = requests.get(
+        f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+        headers=_kis_headers(ac, "FHKST01010100"),
+        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+        verify=False, timeout=10
+    )
+    data = res.json()
+    if data.get('rt_cd') != '0' or not data.get('output'):
+        raise RuntimeError(f"조회 실패: {data.get('msg1', '')}")
+    out      = data['output']
+    market   = out.get('rprs_mrkt_kor_name', '')
+    industry = out.get('bstp_kor_isnm', '')
+    try:
+        mktcap = int(str(out.get('hts_avls', '0')).replace(',', ''))
+    except Exception:
+        mktcap = 0
+
+    if   mktcap >= 10000: size = '대형주'
+    elif mktcap >= 3000:  size = '중형주'
+    else:                 size = '소형주'
+
+    return {'market': market, 'size': size, 'industry': industry, 'mktcap': mktcap}
+
+
 @app.route('/api/stock-info')
 def stock_info():
     """KIS API로 종목 기본정보(시장구분·업종·시가총액·매수금액 제안) 조회."""
@@ -726,30 +757,12 @@ def stock_info():
     buy_date = request.args.get('buy_date', '').strip().replace('-', '')  # YYYYMMDD
     if not code or not code.isdigit():
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
-    ac = _get_api_account()
-    if not ac:
-        return jsonify({'error': 'API 계좌 정보 없음'}), 500
     try:
-        res = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers=_kis_headers(ac, "FHKST01010100"),
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
-            verify=False, timeout=10
-        )
-        data = res.json()
-        if data.get('rt_cd') != '0' or not data.get('output'):
-            return jsonify({'error': f"조회 실패: {data.get('msg1', '')}"}), 404
-        out      = data['output']
-        market   = out.get('rprs_mrkt_kor_name', '')
-        industry = out.get('bstp_kor_isnm', '')
         try:
-            mktcap = int(str(out.get('hts_avls', '0')).replace(',', ''))
-        except Exception:
-            mktcap = 0
-
-        if   mktcap >= 10000: size = '대형주'
-        elif mktcap >= 3000:  size = '중형주'
-        else:                 size = '소형주'
+            meta = _get_market_meta(code)
+        except RuntimeError as e:
+            return jsonify({'error': str(e)}), 404
+        market, size, industry, mktcap = meta['market'], meta['size'], meta['industry'], meta['mktcap']
 
         if size == '대형주':
             amt_min, amt_max, amt_desc = 2000000, 10000000, '유동성 높음, 안정적'
@@ -815,6 +828,219 @@ def stock_info():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ── 투자관리(invest_mng) ─────────────────────────────────────────────
+# invest_point 프로젝트의 analysis_history/mvp_graph 를 재사용한다.
+# import 부작용(무거운 langgraph/DART/LLM 의존성)을 피하려고 지연
+# import 하며, 실패해도 simul_server 자체는 죽지 않도록 호출부에서 예외를 흡수한다.
+_INVEST_POINT_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), 'invest_point')
+
+
+def _import_analysis_history():
+    """analysis_history 모듈 지연 import (psycopg2/dotenv 정도의 가벼운 의존성만 필요)."""
+    if _INVEST_POINT_DIR not in sys.path:
+        sys.path.insert(0, _INVEST_POINT_DIR)
+    import analysis_history
+    return analysis_history
+
+
+def _import_mvp_graph():
+    """mvp_graph 모듈 지연 import — langgraph/DART/LLM 등 무거운 의존성.
+    analysis_history 에 이력이 없는 신규 종목일 때만 호출한다."""
+    if _INVEST_POINT_DIR not in sys.path:
+        sys.path.insert(0, _INVEST_POINT_DIR)
+    import mvp_graph
+    return mvp_graph
+
+
+_SUMMARY_TAGS = (('핵심 이슈', 'invest_issue'), ('투자포인트', 'invest_point'), ('리스크', 'invest_risk'))
+
+
+def _parse_investment_summary(summary):
+    """investment_summary( "[핵심 이슈]\\n...\\n\\n[투자포인트]\\n...\\n\\n[리스크]\\n..." ) 를
+    3개 필드로 분리한다. invest_point.mvp_graph.build_investment_summary() 가 만드는
+    포맷과 동일하게 파싱(태그별 절 경계는 다음 '[' 태그 시작 또는 문자열 끝)."""
+    out = {'invest_issue': '', 'invest_point': '', 'invest_risk': ''}
+    if not summary:
+        return out
+    for tag, key in _SUMMARY_TAGS:
+        m = re.search(rf"\[{re.escape(tag)}\]\s*\n(.*?)(?=\n\n\[|\Z)", summary, re.S)
+        if m:
+            out[key] = m.group(1).strip()
+    return out
+
+
+def _get_invest_point_fields(code):
+    """analysis_history 최신 이력을 우선 조회하고, 이력이 전혀 없는 종목이면 그때만
+    invest_point(mvp_graph.run) 를 실행해 새로 생성한다(수 분 소요 가능).
+    반환: {price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
+           invest_risk, corp_name, run_at, from_cache} 또는 {'error': str} 단독."""
+    try:
+        analysis_history = _import_analysis_history()
+    except Exception as e:
+        return {'error': f'analysis_history 모듈 로드 실패: {e}'}
+
+    try:
+        rows = analysis_history.get_recent(code, limit=1)
+    except Exception as e:
+        return {'error': f'투자분석 이력 조회 오류: {e}'}
+
+    from_cache = True
+    if not rows:
+        from_cache = False
+        try:
+            mvp_graph = _import_mvp_graph()
+        except Exception as e:
+            return {'error': f'invest_point 모듈 로드 실패: {e}'}
+        try:
+            mvp_graph.run(code)
+        except Exception as e:
+            return {'error': f'invest_point 분석 실행 오류: {e}'}
+        try:
+            rows = analysis_history.get_recent(code, limit=1)
+        except Exception as e:
+            return {'error': f'투자분석 이력 조회 오류: {e}'}
+        if not rows:
+            return {'error': '투자분석 결과 저장 실패(이력 없음)'}
+
+    row = rows[0]
+    parsed = _parse_investment_summary(row.get('investment_summary'))
+    return {
+        'corp_name':    row.get('corp_name'),
+        'price':        row.get('price'),
+        'sales_amt':    row.get('매출액-1'),      # 금년(최근 실측) 매출액
+        'ep_sales_amt': row.get('매출액+1'),      # 내년(최근 추정) 매출액
+        'report_dt':    row.get('rcept_dt'),      # 공시접수일자
+        'invest_issue': parsed['invest_issue'],
+        'invest_point': parsed['invest_point'],
+        'invest_risk':  parsed['invest_risk'],
+        'run_at':       str(row.get('run_at') or ''),
+        'from_cache':   from_cache,
+    }
+
+def _num_or_none(v):
+    try:
+        if v in (None, ''):
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.route('/api/invest-mng')
+def invest_mng_info():
+    """종목코드로 투자관리(invest_mng) 기존 저장값 + 시장정보 + invest_point 분석결과 조회."""
+    code = request.args.get('code', '').strip().zfill(6)
+    if not code or not code.isdigit():
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT code, name, main_business, high_price, market, size, industry, mktcap,
+                   price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
+                   invest_risk, check_dt, proc_yn
+            FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
+        """, (code,))
+        row = cur.fetchone()
+        cur.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+    existing = None
+    if row:
+        existing = {
+            'code': row[0], 'name': row[1], 'main_business': row[2], 'high_price': row[3],
+            'market': row[4], 'size': row[5], 'industry': row[6], 'mktcap': row[7],
+            'price': row[8], 'sales_amt': row[9], 'ep_sales_amt': row[10],
+            'report_dt': row[11], 'invest_issue': row[12], 'invest_point': row[13],
+            'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
+        }
+
+    market_meta, market_meta_error = None, ''
+    try:
+        market_meta = _get_market_meta(code)
+    except Exception as e:
+        market_meta_error = str(e)
+
+    invest_point_data = _get_invest_point_fields(code)
+
+    return jsonify({
+        'code': code,
+        'existing': existing,
+        'market_meta': market_meta,
+        'market_meta_error': market_meta_error,
+        'invest_point': invest_point_data,
+    })
+
+
+@app.route('/api/invest-mng/apply', methods=['POST'])
+def invest_mng_apply():
+    """투자관리(invest_mng) 화면의 입력값 + 조회값을 종목코드 기준으로 저장(생성/변경)."""
+    data = request.get_json(force=True, silent=True) or {}
+    code = str(data.get('code', '')).strip().zfill(6)
+    name = str(data.get('name', '')).strip()
+    if not code or not code.isdigit() or not name:
+        return jsonify({'error': '종목코드/종목명이 필요합니다.'}), 400
+
+    main_business = (data.get('main_business') or '').strip() or None
+    market        = (data.get('market') or '').strip() or None
+    size          = (data.get('size') or '').strip() or None
+    industry      = (data.get('industry') or '').strip() or None
+    report_dt     = (data.get('report_dt') or '').strip() or None
+    invest_issue  = (data.get('invest_issue') or '').strip() or None
+    invest_point  = (data.get('invest_point') or '').strip() or None
+    invest_risk   = (data.get('invest_risk') or '').strip() or None
+    high_price    = _num_or_none(data.get('high_price'))
+    mktcap        = _num_or_none(data.get('mktcap'))
+    price         = _num_or_none(data.get('price'))
+    sales_amt     = _num_or_none(data.get('sales_amt'))
+    ep_sales_amt  = _num_or_none(data.get('ep_sales_amt'))
+    check_dt      = datetime.now().strftime('%Y%m%d')
+    exclude       = bool(data.get('exclude'))
+    proc_yn       = 'N' if exclude else 'Y'
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y'", (code,))
+        exists = cur.fetchone() is not None
+
+        if exists:
+            cur.execute("""
+                UPDATE public.invest_mng SET
+                    name = %s, main_business = %s, high_price = %s, market = %s, size = %s,
+                    industry = %s, mktcap = %s, price = %s, sales_amt = %s, ep_sales_amt = %s,
+                    report_dt = %s, invest_issue = %s, invest_point = %s, invest_risk = %s,
+                    check_dt = %s, proc_yn = %s, mod_dt = %s
+                WHERE code = %s AND proc_yn = 'Y'
+            """, (name, main_business, high_price, market, size, industry, mktcap, price,
+                  sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                  check_dt, proc_yn, datetime.now(), code))
+        else:
+            cur.execute("""
+                INSERT INTO public.invest_mng
+                    (code, name, main_business, high_price, market, size, industry, mktcap,
+                     price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
+                     invest_risk, check_dt, proc_yn, crt_dt, mod_dt)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (code, name, main_business, high_price, market, size, industry, mktcap, price,
+                  sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                  check_dt, proc_yn, datetime.now(), datetime.now()))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+    message = '투자관리 대상에서 제외되었습니다.' if exclude else '투자관리 정보가 저장되었습니다.'
+    return jsonify({'message': message, 'inserted': not exists, 'excluded': exclude})
 
 
 @app.route('/api/import-csv', methods=['POST'])
@@ -2036,7 +2262,7 @@ def _analysis_history_invest_points(code: str) -> dict:
         cur  = conn.cursor()
         cur.execute("""
             SELECT investment_summary, report,
-                   CASE WHEN to_char(run_at, 'YYYYMMDD') = to_char(current_date, 'YYYYMMDD') THEN '1' ELSE '2' END
+                   CASE WHEN to_char(run_at, 'YYYYMMDD') >= to_char(date_trunc('day', current_date - interval '7 day'), 'YYYYMMDD') THEN '1' ELSE '2' END
             FROM analysis_history
             WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
             ORDER BY id DESC LIMIT 1

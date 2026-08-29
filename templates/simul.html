@@ -71,6 +71,25 @@
     }
     .field input:focus { border-color: #4361ee; }
     .field input.loading { background: #f8f8f8; color: #999; }
+    .field textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: .85rem;
+      color: #1a1a2e;
+      transition: border-color .2s;
+      outline: none;
+      resize: vertical;
+      font-family: inherit;
+    }
+    .field textarea:focus { border-color: #4361ee; }
+    .field textarea[readonly] { background: #f8f9fb; color: #444; }
+    .invest-mng-error {
+      font-size: .78rem; color: #e63946; background: #fff1f2;
+      border: 1px solid #ffd6d9; border-radius: 7px; padding: 7px 12px; margin-top: 4px;
+    }
+    .invest-mng-hint { font-size: .72rem; color: #aaa; margin-top: 4px; }
 
     .btn-row {
       display: flex;
@@ -653,6 +672,97 @@
       {{ r.table }} ({{ r.inserted }}건)
     </a>
     <button class="download-close" @click="downloadFiles = []">✕</button>
+  </div>
+
+  <!-- 투자관리 입력 -->
+  <div class="card" v-if="!preview">
+    <div class="section-title">투자 관리 입력</div>
+    <div class="form-grid">
+
+      <div class="field full">
+        <label>종목코드 / 종목명 *</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input
+            v-model.trim="investMng.code"
+            @blur="investMngLookup"
+            placeholder="코드(005930) 또는 종목명"
+            :class="{loading: investMngLookingUp}"
+            style="flex:1;width:auto"
+          />
+          <label style="font-weight:normal;cursor:pointer;display:flex;align-items:center;gap:3px;margin-bottom:0;color:#e63946;white-space:nowrap">
+            <input type="checkbox" v-model="investMng.exclude" style="cursor:pointer" />
+            투자 관리 제외
+          </label>
+        </div>
+        <div v-if="investMng.name" style="font-size:.78rem;color:#4361ee;margin-top:4px;padding-left:2px">
+          {{ investMng.name }}
+          <span v-if="investMngLookingUp" style="color:#aaa;margin-left:6px">조회/분석 중... (신규 종목은 수 분 소요될 수 있습니다)</span>
+          <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">invest_point 신규 분석 완료</span>
+          <span v-if="investMng.exclude" style="color:#e63946;margin-left:6px">투자 관리 제외 대상으로 표시됨</span>
+        </div>
+        <div v-if="investMngPointError" class="invest-mng-error">⚠️ {{ investMngPointError }}</div>
+      </div>
+
+      <!-- 시장정보 표시 -->
+      <div class="field full" v-if="investMng.market || investMng.industry">
+        <div class="stock-info-box">
+          <span class="stock-badge badge-market" v-if="investMng.market">{{ investMng.market }}</span>
+          <span class="stock-badge" :class="sizeClass(investMng.size)" v-if="investMng.size">{{ investMng.size }}</span>
+          <span class="stock-badge badge-industry" v-if="investMng.industry">{{ investMng.industry }}</span>
+          <span style="font-size:.76rem;color:#888" v-if="investMng.mktcap">시가총액 {{ fmt(investMng.mktcap) }}억원</span>
+        </div>
+      </div>
+
+      <div class="field full">
+        <label>주요사업</label>
+        <textarea v-model.trim="investMng.main_business" rows="2" placeholder="주요사업 내용을 입력하세요"></textarea>
+      </div>
+
+      <div class="field">
+        <label>상단가 (원)</label>
+        <input v-model.number="investMng.high_price" type="number" min="0" placeholder="예) 90000" />
+      </div>
+      <div class="field">
+        <label>현재가 (원)</label>
+        <input :value="investMng.price != null ? fmt(investMng.price) : ''" readonly />
+      </div>
+      <div class="field">
+        <label>금년 매출액 (억원)</label>
+        <input :value="investMng.sales_amt != null ? fmt(investMng.sales_amt) : ''" readonly />
+      </div>
+      <div class="field">
+        <label>내년 매출액 (억원)</label>
+        <input :value="investMng.ep_sales_amt != null ? fmt(investMng.ep_sales_amt) : ''" readonly />
+      </div>
+
+      <div class="field full">
+        <label>핵심 이슈</label>
+        <textarea v-model="investMng.invest_issue" rows="3" readonly placeholder="종목 조회 시 invest_point 분석 결과가 자동으로 채워집니다"></textarea>
+      </div>
+      <div class="field full">
+        <label>투자포인트</label>
+        <textarea v-model="investMng.invest_point" rows="3" readonly></textarea>
+      </div>
+      <div class="field full">
+        <label>리스크</label>
+        <textarea v-model="investMng.invest_risk" rows="3" readonly></textarea>
+      </div>
+      
+      <div class="field">
+        <label>공시접수일자</label>
+        <input :value="fmtDay(investMng.report_dt)" readonly />
+      </div>
+      <div class="field" v-if="investMng.check_dt">
+        <label>최근 체크일자</label>
+        <input :value="fmtDay(investMng.check_dt)" readonly />
+      </div>
+
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-save" @click="applyInvestMng" :disabled="!investMng.code || !investMng.name">투자 정보 적용</button>
+    </div>
+    <div class="invest-mng-hint">종목코드/종목명 입력 시 시장정보와 투자분석 결과를 자동 조회합니다.</div>
   </div>
 
   <!-- 입력 폼 -->
@@ -1691,6 +1801,18 @@ createApp({
     const stockInfo     = ref(null);
     const dashboard     = ref(null);
 
+    // ── 투자관리(invest_mng) 입력 ──
+    const investMng = ref({
+      code: '', name: '', main_business: '', high_price: null,
+      market: '', size: '', industry: '', mktcap: null,
+      price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
+      invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
+      exclude: false,
+    });
+    const investMngLookingUp  = ref(false);
+    const investMngPointError = ref('');
+    const investMngFromCache  = ref(true);
+
     const CHANGE_LABELS = {
       stop_price: '이탈가', target_price: '목표가', exit_price: '최종이탈가',
       basic_price: '매수단가', basic_qty: '매수량', trail_tp: '추적유형', proc_min: '처리시간',
@@ -1999,6 +2121,118 @@ createApp({
         }
       } catch { /* 무시 */ } finally {
         nameLookingUp.value = false;
+      }
+    }
+
+    async function fetchInvestMng(code, name) {
+      investMng.value.code = code;
+      if (name) investMng.value.name = name;
+      investMngPointError.value = '';
+      try {
+        const res  = await fetch(`/api/invest-mng?code=${code}`);
+        const data = await res.json();
+        if (data.error) { investMngPointError.value = data.error; return; }
+
+        const ex = data.existing || {};
+        investMng.value.main_business = ex.main_business ?? '';
+        investMng.value.high_price    = ex.high_price ?? null;
+        investMng.value.check_dt      = ex.check_dt ?? '';
+        investMng.value.exclude       = ex.proc_yn === 'N';
+        if (!investMng.value.name && ex.name) investMng.value.name = ex.name;
+
+        if (data.market_meta) {
+          investMng.value.market   = data.market_meta.market;
+          investMng.value.size     = data.market_meta.size;
+          investMng.value.industry = data.market_meta.industry;
+          investMng.value.mktcap   = data.market_meta.mktcap;
+        } else {
+          // 시장정보 조회 실패 시 기존 저장값이라도 유지
+          investMng.value.market   = ex.market ?? '';
+          investMng.value.size     = ex.size ?? '';
+          investMng.value.industry = ex.industry ?? '';
+          investMng.value.mktcap   = ex.mktcap ?? null;
+          if (data.market_meta_error) {
+            investMngPointError.value = data.market_meta_error;
+          }
+        }
+
+        const ip = data.invest_point || {};
+        if (ip.error) {
+          investMngPointError.value = [investMngPointError.value, ip.error].filter(Boolean).join(' / ');
+          investMng.value.price        = ex.price ?? null;
+          investMng.value.sales_amt    = ex.sales_amt ?? null;
+          investMng.value.ep_sales_amt = ex.ep_sales_amt ?? null;
+          investMng.value.report_dt    = ex.report_dt ?? '';
+          investMng.value.invest_issue = ex.invest_issue ?? '';
+          investMng.value.invest_point = ex.invest_point ?? '';
+          investMng.value.invest_risk  = ex.invest_risk ?? '';
+        } else {
+          investMngFromCache.value     = !!ip.from_cache;
+          investMng.value.price        = ip.price ?? null;
+          investMng.value.sales_amt    = ip.sales_amt ?? null;
+          investMng.value.ep_sales_amt = ip.ep_sales_amt ?? null;
+          investMng.value.report_dt    = ip.report_dt || '';
+          investMng.value.invest_issue = ip.invest_issue || '';
+          investMng.value.invest_point = ip.invest_point || '';
+          investMng.value.invest_risk  = ip.invest_risk || '';
+          if (!investMng.value.name && ip.corp_name) investMng.value.name = ip.corp_name;
+        }
+      } catch (e) {
+        investMngPointError.value = '서버 연결 오류: ' + e.message;
+      }
+    }
+
+    async function investMngLookup() {
+      const val = investMng.value.code.trim();
+      if (!val) return;
+      investMngLookingUp.value = true;
+      investMngPointError.value = '';
+      try {
+        if (/^\d+$/.test(val)) {
+          const code = val.padStart(6, '0');
+          investMng.value.code = code;
+          const res  = await fetch(`/api/stock-name?code=${code}`);
+          const data = await res.json();
+          await fetchInvestMng(code, data.name || '');
+        } else {
+          const res  = await fetch(`/api/stock-code?name=${encodeURIComponent(val)}`);
+          const data = await res.json();
+          if (data.code) {
+            investMng.value.name = val;
+            await fetchInvestMng(data.code, val);
+          } else {
+            investMngPointError.value = '종목을 찾을 수 없습니다.';
+          }
+        }
+      } catch (e) {
+        investMngPointError.value = '서버 연결 오류: ' + e.message;
+      } finally {
+        investMngLookingUp.value = false;
+      }
+    }
+
+    async function applyInvestMng() {
+      if (!investMng.value.code || !investMng.value.name) {
+        showAlert('종목코드/종목명을 먼저 조회하세요.');
+        return;
+      }
+      if (investMng.value.exclude && !confirm(`[${investMng.value.name}] 투자관리 대상에서 제외 처리하시겠습니까?`)) {
+        return;
+      }
+      loading.value = true;
+      try {
+        const res  = await fetch('/api/invest-mng/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(investMng.value)
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '저장 오류'); return; }
+        showAlert(data.message, data.excluded ? 'warn' : (data.inserted ? 'success' : 'warn'), 4000);
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        loading.value = false;
       }
     }
 
@@ -2320,6 +2554,8 @@ createApp({
       simDate, running, runLog,
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
+      investMng, investMngLookingUp, investMngPointError, investMngFromCache,
+      investMngLookup, applyInvestMng,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
