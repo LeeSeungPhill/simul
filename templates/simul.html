@@ -698,6 +698,7 @@
           {{ investMng.name }}
           <span v-if="investMngLookingUp" style="color:#aaa;margin-left:6px">조회/분석 중... (신규 종목은 수 분 소요될 수 있습니다)</span>
           <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">invest_point 신규 분석 완료</span>
+          <span v-if="!investMngLookingUp && investMngStale" style="color:#f4a261;margin-left:6px">⚠ {{ investMngStaleDays }}일 전 분석된 오래된 정보입니다</span>
           <span v-if="investMng.exclude" style="color:#e63946;margin-left:6px">투자 관리 제외 대상으로 표시됨</span>
         </div>
         <div v-if="investMngPointError" class="invest-mng-error">⚠️ {{ investMngPointError }}</div>
@@ -1807,11 +1808,22 @@ createApp({
       market: '', size: '', industry: '', mktcap: null,
       price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
       invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
-      exclude: false,
+      exclude: false, run_at: '',
     });
     const investMngLookingUp  = ref(false);
     const investMngPointError = ref('');
     const investMngFromCache  = ref(true);
+
+    const INVEST_POINT_STALE_DAYS = 7;   // 백엔드 _INVEST_POINT_STALE_DAYS 와 동일 기준
+    const investMngStaleDays = computed(() => {
+      if (!investMng.value.run_at) return null;
+      const d = new Date(investMng.value.run_at.replace(' ', 'T'));
+      if (isNaN(d.getTime())) return null;
+      return Math.floor((Date.now() - d.getTime()) / 86400000);
+    });
+    const investMngStale = computed(() =>
+      investMngStaleDays.value !== null && investMngStaleDays.value > INVEST_POINT_STALE_DAYS
+    );
 
     const CHANGE_LABELS = {
       stop_price: '이탈가', target_price: '목표가', exit_price: '최종이탈가',
@@ -2166,6 +2178,7 @@ createApp({
           investMng.value.invest_issue = ex.invest_issue ?? '';
           investMng.value.invest_point = ex.invest_point ?? '';
           investMng.value.invest_risk  = ex.invest_risk ?? '';
+          investMng.value.run_at       = '';
         } else {
           investMngFromCache.value     = !!ip.from_cache;
           investMng.value.price        = ip.price ?? null;
@@ -2175,6 +2188,7 @@ createApp({
           investMng.value.invest_issue = ip.invest_issue || '';
           investMng.value.invest_point = ip.invest_point || '';
           investMng.value.invest_risk  = ip.invest_risk || '';
+          investMng.value.run_at       = ip.run_at || '';
           if (!investMng.value.name && ip.corp_name) investMng.value.name = ip.corp_name;
         }
       } catch (e) {
@@ -2555,6 +2569,7 @@ createApp({
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
+      investMngStale, investMngStaleDays,
       investMngLookup, applyInvestMng,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,

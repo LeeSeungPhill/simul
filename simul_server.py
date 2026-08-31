@@ -871,8 +871,11 @@ def _parse_investment_summary(summary):
     return out
 
 
+_INVEST_POINT_STALE_DAYS = 7  # analysis_history 최신 이력이 이보다 오래되면 재분석
+
 def _get_invest_point_fields(code):
-    """analysis_history 최신 이력을 우선 조회하고, 이력이 전혀 없는 종목이면 그때만
+    """analysis_history 최신 이력을 우선 조회하고, 이력이 전혀 없거나 최신 이력의
+    run_at이 현재일 기준 _INVEST_POINT_STALE_DAYS일보다 오래된 종목이면 그때만
     invest_point(mvp_graph.run) 를 실행해 새로 생성한다(수 분 소요 가능).
     반환: {price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
            invest_risk, corp_name, run_at, from_cache} 또는 {'error': str} 단독."""
@@ -886,8 +889,20 @@ def _get_invest_point_fields(code):
     except Exception as e:
         return {'error': f'투자분석 이력 조회 오류: {e}'}
 
+    needs_run = not rows
+    if rows:
+        run_at = rows[0].get('run_at')
+        if run_at:
+            try:
+                run_at_dt = run_at if isinstance(run_at, datetime) \
+                    else datetime.strptime(str(run_at)[:19], '%Y-%m-%d %H:%M:%S')
+                if (datetime.now() - run_at_dt).days > _INVEST_POINT_STALE_DAYS:
+                    needs_run = True
+            except Exception:
+                pass
+
     from_cache = True
-    if not rows:
+    if needs_run:
         from_cache = False
         try:
             mvp_graph = _import_mvp_graph()
