@@ -923,23 +923,9 @@ def _get_invest_point_fields(code):
     parsed = _parse_investment_summary(row.get('investment_summary'))
     price = row.get('price')
 
-    # 배당율(dividend_rate): DPS-5~DPS-1(과거 5개년 실적)이 모두 존재하고 0보다 커야만
-    # (한 해라도 누락되거나 무배당이면 제외) 평균 DPS 대비 현재가 기준 배당율 산정.
-    dps_cols = ('DPS-5', 'DPS-4', 'DPS-3', 'DPS-2', 'DPS-1')
-    dps_vals = [row.get(c) for c in dps_cols]
-    dividend_rate = None
-    if all(v is not None and v > 0 for v in dps_vals) and price:
-        try:
-            avg_dps = sum(float(v) for v in dps_vals) / len(dps_vals)
-            dividend_rate = round(avg_dps / float(price) * 100, 2)
-        except (TypeError, ZeroDivisionError):
-            dividend_rate = None
-
-    # 상승잔존율(remain_rate) 표시 가능 여부:
-    #   - 상장 5년 이상 근사 판정: 매출액-5(5년 전 실적) 존재
-    #   - 매출액이 -1(금년 실측) → +1(내년 추정)에서 증가 또는 유사(-5% 이내 하락까지
-    #     허용)해야 함 — 실적이 뚜렷이 꺾이는 종목은 전고점 대비 상승여력을 보여주는
-    #     게 오도의 소지가 있어 제외한다(영업이익·당기순이익은 판정에서 제외).
+    # 매출액이 -1(금년 실측) → +1(내년 추정)에서 증가 또는 유사(-5% 이내 하락까지
+    # 허용)한지 판정 — 실적이 뚜렷이 꺾이는 종목은 상승잔존율/배당율 모두 표시하지
+    # 않는다(전고점 대비 상승여력·배당 매력을 보여주는 게 오도의 소지가 있으므로).
     def _grew_or_similar(base, nxt, tolerance=-0.05):
         if base is None or nxt is None:
             return False
@@ -953,9 +939,26 @@ def _get_invest_point_fields(code):
             return nxt_f >= base_f
         return (nxt_f - base_f) / base_f >= tolerance
 
+    sales_grew_or_similar = _grew_or_similar(row.get('매출액-1'), row.get('매출액+1'))
+
+    # 배당율(dividend_rate): DPS-5~DPS-1(과거 5개년 실적)이 모두 존재하고 0보다 크며
+    # (한 해라도 누락되거나 무배당이면 제외), 매출액도 증가/유사 조건을 만족해야만
+    # 평균 DPS 대비 현재가 기준 배당율 산정.
+    dps_cols = ('DPS-5', 'DPS-4', 'DPS-3', 'DPS-2', 'DPS-1')
+    dps_vals = [row.get(c) for c in dps_cols]
+    dividend_rate = None
+    if all(v is not None and v > 0 for v in dps_vals) and price and sales_grew_or_similar:
+        try:
+            avg_dps = sum(float(v) for v in dps_vals) / len(dps_vals)
+            dividend_rate = round(avg_dps / float(price) * 100, 2)
+        except (TypeError, ZeroDivisionError):
+            dividend_rate = None
+
+    # 상승잔존율(remain_rate) 표시 가능 여부:
+    #   - 상장 5년 이상 근사 판정: 매출액-5(5년 전 실적) 존재
+    #   - 매출액 증가/유사 조건 충족(영업이익·당기순이익은 판정에서 제외)
     listed_5y = row.get('매출액-5') is not None
-    metrics_ok = _grew_or_similar(row.get('매출액-1'), row.get('매출액+1'))
-    remain_rate_eligible = listed_5y and metrics_ok
+    remain_rate_eligible = listed_5y and sales_grew_or_similar
 
     return {
         'corp_name':     row.get('corp_name'),
