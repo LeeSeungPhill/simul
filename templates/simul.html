@@ -728,12 +728,27 @@
         <input :value="investMng.price != null ? fmt(investMng.price) : ''" readonly />
       </div>
       <div class="field">
-        <label>금년 매출액 (억원)</label>
+        <label>매출액 (억원)</label>
         <input :value="investMng.sales_amt != null ? fmt(investMng.sales_amt) : ''" readonly />
       </div>
       <div class="field">
-        <label>내년 매출액 (억원)</label>
+        <label>예상 매출액 (억원)</label>
         <input :value="investMng.ep_sales_amt != null ? fmt(investMng.ep_sales_amt) : ''" readonly />
+      </div>
+
+      <div class="field">
+        <label>상승잔존율 (%)</label>
+        <input :value="investMngRemainRate != null ? investMngRemainRate + '%' : ''" readonly
+               :style="investMngRemainRate != null ? (investMngRemainRate >= 0 ? 'color:#2dc653' : 'color:#e63946') : ''" />
+      </div>
+      <div class="field">
+        <label>매출증가율 (%)</label>
+        <input :value="investMngSalesRate != null ? investMngSalesRate + '%' : ''" readonly
+               :style="investMngSalesRate != null ? (investMngSalesRate >= 0 ? 'color:#2dc653' : 'color:#e63946') : ''" />
+      </div>
+      <div class="field">
+        <label>배당율 (%)</label>
+        <input :value="investMng.dividend_rate != null ? investMng.dividend_rate + '%' : ''" readonly />
       </div>
 
       <div class="field full">
@@ -748,7 +763,20 @@
         <label>리스크</label>
         <textarea v-model="investMng.invest_risk" rows="3" readonly></textarea>
       </div>
-      
+
+      <div class="field full">
+        <label>가치주 체크 사항</label>
+        <textarea v-model.trim="investMng.value_check" rows="2" placeholder="가치주 관점 체크 사항을 입력하세요"></textarea>
+      </div>
+      <div class="field full">
+        <label>배당주 체크 사항</label>
+        <textarea v-model.trim="investMng.dividend_check" rows="2" placeholder="배당주 관점 체크 사항을 입력하세요"></textarea>
+      </div>
+      <div class="field full">
+        <label>성장주 체크 사항</label>
+        <textarea v-model.trim="investMng.growth_check" rows="2" placeholder="성장주 관점 체크 사항을 입력하세요"></textarea>
+      </div>
+
       <div class="field">
         <label>공시접수일자</label>
         <input :value="fmtDay(investMng.report_dt)" readonly />
@@ -1808,11 +1836,31 @@ createApp({
       market: '', size: '', industry: '', mktcap: null,
       price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
       invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
-      exclude: false, run_at: '',
+      exclude: false, run_at: '', dividend_rate: null,
+      value_check: '', dividend_check: '', growth_check: '',
+      remain_rate_eligible: false,
     });
     const investMngLookingUp  = ref(false);
     const investMngPointError = ref('');
     const investMngFromCache  = ref(true);
+
+    // 상승잔존율: 현재가 대비 상단가(전고점)까지 남은 상승 여력.
+    // remain_rate_eligible(백엔드 판정: 상장 5년 이상 근사 + 매출액·영업이익·당기순이익
+    // -1→+1이 증가 또는 유사(-5% 이내 하락까지 허용))을 만족할 때만 값을 반환한다.
+    const investMngRemainRate = computed(() => {
+      if (!investMng.value.remain_rate_eligible) return null;
+      const price = investMng.value.price;
+      const high  = investMng.value.high_price;
+      if (!price || high == null) return null;
+      return Math.round((high - price) / price * 1000) / 10;
+    });
+    // 매출증가율: 금년 매출액 대비 내년(추정) 매출액 상승률
+    const investMngSalesRate = computed(() => {
+      const sales   = investMng.value.sales_amt;
+      const epSales = investMng.value.ep_sales_amt;
+      if (!sales || epSales == null) return null;
+      return Math.round((epSales - sales) / sales * 1000) / 10;
+    });
 
     const INVEST_POINT_STALE_DAYS = 7;   // 백엔드 _INVEST_POINT_STALE_DAYS 와 동일 기준
     const investMngStaleDays = computed(() => {
@@ -2146,10 +2194,15 @@ createApp({
         if (data.error) { investMngPointError.value = data.error; return; }
 
         const ex = data.existing || {};
-        investMng.value.main_business = ex.main_business ?? '';
-        investMng.value.high_price    = ex.high_price ?? null;
-        investMng.value.check_dt      = ex.check_dt ?? '';
-        investMng.value.exclude       = ex.proc_yn === 'N';
+        investMng.value.main_business  = ex.main_business ?? '';
+        investMng.value.high_price     = ex.high_price ?? null;
+        investMng.value.check_dt       = ex.check_dt ?? '';
+        investMng.value.exclude        = ex.proc_yn === 'N';
+        // 가치주/배당주/성장주 체크 사항은 investment_summary/analysis_history 대상이 아니라
+        // invest_mng 저장값에만 존재하는 수동 입력 항목이므로 항상 existing 기준으로 로드
+        investMng.value.value_check    = ex.value_check ?? '';
+        investMng.value.dividend_check = ex.dividend_check ?? '';
+        investMng.value.growth_check   = ex.growth_check ?? '';
         if (!investMng.value.name && ex.name) investMng.value.name = ex.name;
 
         if (data.market_meta) {
@@ -2178,6 +2231,8 @@ createApp({
           investMng.value.invest_issue = ex.invest_issue ?? '';
           investMng.value.invest_point = ex.invest_point ?? '';
           investMng.value.invest_risk  = ex.invest_risk ?? '';
+          investMng.value.dividend_rate = ex.dividend_rate ?? null;
+          investMng.value.remain_rate_eligible = false;   // 최신 재무데이터 조회 실패 → 안전하게 미표시
           investMng.value.run_at       = '';
         } else {
           investMngFromCache.value     = !!ip.from_cache;
@@ -2188,6 +2243,8 @@ createApp({
           investMng.value.invest_issue = ip.invest_issue || '';
           investMng.value.invest_point = ip.invest_point || '';
           investMng.value.invest_risk  = ip.invest_risk || '';
+          investMng.value.dividend_rate = ip.dividend_rate ?? null;
+          investMng.value.remain_rate_eligible = !!ip.remain_rate_eligible;
           investMng.value.run_at       = ip.run_at || '';
           if (!investMng.value.name && ip.corp_name) investMng.value.name = ip.corp_name;
         }
@@ -2238,7 +2295,11 @@ createApp({
         const res  = await fetch('/api/invest-mng/apply', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(investMng.value)
+          body: JSON.stringify({
+            ...investMng.value,
+            remain_rate: investMngRemainRate.value,
+            sales_rate:  investMngSalesRate.value,
+          })
         });
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '저장 오류'); return; }
@@ -2569,7 +2630,7 @@ createApp({
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
       stockInfo, dashboard,
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
-      investMngStale, investMngStaleDays,
+      investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,

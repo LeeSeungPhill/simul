@@ -921,17 +921,55 @@ def _get_invest_point_fields(code):
 
     row = rows[0]
     parsed = _parse_investment_summary(row.get('investment_summary'))
+    price = row.get('price')
+
+    # 배당율(dividend_rate): DPS-5~DPS-1(과거 5개년 실적)이 모두 존재하고 0보다 커야만
+    # (한 해라도 누락되거나 무배당이면 제외) 평균 DPS 대비 현재가 기준 배당율 산정.
+    dps_cols = ('DPS-5', 'DPS-4', 'DPS-3', 'DPS-2', 'DPS-1')
+    dps_vals = [row.get(c) for c in dps_cols]
+    dividend_rate = None
+    if all(v is not None and v > 0 for v in dps_vals) and price:
+        try:
+            avg_dps = sum(float(v) for v in dps_vals) / len(dps_vals)
+            dividend_rate = round(avg_dps / float(price) * 100, 2)
+        except (TypeError, ZeroDivisionError):
+            dividend_rate = None
+
+    # 상승잔존율(remain_rate) 표시 가능 여부:
+    #   - 상장 5년 이상 근사 판정: 매출액-5(5년 전 실적) 존재
+    #   - 매출액이 -1(금년 실측) → +1(내년 추정)에서 증가 또는 유사(-5% 이내 하락까지
+    #     허용)해야 함 — 실적이 뚜렷이 꺾이는 종목은 전고점 대비 상승여력을 보여주는
+    #     게 오도의 소지가 있어 제외한다(영업이익·당기순이익은 판정에서 제외).
+    def _grew_or_similar(base, nxt, tolerance=-0.05):
+        if base is None or nxt is None:
+            return False
+        try:
+            base_f, nxt_f = float(base), float(nxt)
+        except (TypeError, ValueError):
+            return False
+        if base_f <= 0:
+            # 기준연도가 적자(0 이하)면 비율 비교가 의미 없음(부호 왜곡) → 절대 개선 여부로 판단.
+            # 적자 축소·흑자전환은 통과, 적자 확대만 탈락.
+            return nxt_f >= base_f
+        return (nxt_f - base_f) / base_f >= tolerance
+
+    listed_5y = row.get('매출액-5') is not None
+    metrics_ok = _grew_or_similar(row.get('매출액-1'), row.get('매출액+1'))
+    remain_rate_eligible = listed_5y and metrics_ok
+
     return {
-        'corp_name':    row.get('corp_name'),
-        'price':        row.get('price'),
-        'sales_amt':    row.get('매출액-1'),      # 금년(최근 실측) 매출액
-        'ep_sales_amt': row.get('매출액+1'),      # 내년(최근 추정) 매출액
-        'report_dt':    row.get('rcept_dt'),      # 공시접수일자
-        'invest_issue': parsed['invest_issue'],
-        'invest_point': parsed['invest_point'],
-        'invest_risk':  parsed['invest_risk'],
-        'run_at':       str(row.get('run_at') or ''),
-        'from_cache':   from_cache,
+        'corp_name':     row.get('corp_name'),
+        'price':         price,
+        'sales_amt':     row.get('매출액-1'),      # 금년(최근 실측) 매출액
+        'ep_sales_amt':  row.get('매출액+1'),      # 내년(최근 추정) 매출액
+        'dividend_rate': dividend_rate,            # DPS-5~DPS-1 평균 배당금 / 현재가
+        'remain_rate_eligible': remain_rate_eligible,
+        'report_dt':     row.get('rcept_dt'),      # 공시접수일자
+        'invest_issue':  parsed['invest_issue'],
+        'invest_point':  parsed['invest_point'],
+        'invest_risk':   parsed['invest_risk'],
+        'run_at':        str(row.get('run_at') or ''),
+        'from_cache':    from_cache,
     }
 
 def _num_or_none(v):
@@ -956,7 +994,9 @@ def invest_mng_info():
         cur.execute("""
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
-                   invest_risk, check_dt, proc_yn
+                   invest_risk, check_dt, proc_yn,
+                   remain_rate, dividend_rate, sales_rate,
+                   value_check, dividend_check, growth_check
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -974,6 +1014,8 @@ def invest_mng_info():
             'price': row[8], 'sales_amt': row[9], 'ep_sales_amt': row[10],
             'report_dt': row[11], 'invest_issue': row[12], 'invest_point': row[13],
             'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
+            'remain_rate': row[17], 'dividend_rate': row[18], 'sales_rate': row[19],
+            'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22],
         }
 
     market_meta, market_meta_error = None, ''
@@ -1015,6 +1057,12 @@ def invest_mng_apply():
     price         = _num_or_none(data.get('price'))
     sales_amt     = _num_or_none(data.get('sales_amt'))
     ep_sales_amt  = _num_or_none(data.get('ep_sales_amt'))
+    remain_rate   = _num_or_none(data.get('remain_rate'))
+    dividend_rate = _num_or_none(data.get('dividend_rate'))
+    sales_rate    = _num_or_none(data.get('sales_rate'))
+    value_check     = (data.get('value_check') or '').strip() or None
+    dividend_check  = (data.get('dividend_check') or '').strip() or None
+    growth_check    = (data.get('growth_check') or '').strip() or None
     check_dt      = datetime.now().strftime('%Y%m%d')
     exclude       = bool(data.get('exclude'))
     proc_yn       = 'N' if exclude else 'Y'
@@ -1031,20 +1079,28 @@ def invest_mng_apply():
                     name = %s, main_business = %s, high_price = %s, market = %s, size = %s,
                     industry = %s, mktcap = %s, price = %s, sales_amt = %s, ep_sales_amt = %s,
                     report_dt = %s, invest_issue = %s, invest_point = %s, invest_risk = %s,
+                    remain_rate = %s, dividend_rate = %s, sales_rate = %s,
+                    value_check = %s, dividend_check = %s, growth_check = %s,
                     check_dt = %s, proc_yn = %s, mod_dt = %s
                 WHERE code = %s AND proc_yn = 'Y'
             """, (name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                  remain_rate, dividend_rate, sales_rate,
+                  value_check, dividend_check, growth_check,
                   check_dt, proc_yn, datetime.now(), code))
         else:
             cur.execute("""
                 INSERT INTO public.invest_mng
                     (code, name, main_business, high_price, market, size, industry, mktcap,
                      price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
-                     invest_risk, check_dt, proc_yn, crt_dt, mod_dt)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     invest_risk, remain_rate, dividend_rate, sales_rate,
+                     value_check, dividend_check, growth_check,
+                     check_dt, proc_yn, crt_dt, mod_dt)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (code, name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                  remain_rate, dividend_rate, sales_rate,
+                  value_check, dividend_check, growth_check,
                   check_dt, proc_yn, datetime.now(), datetime.now()))
         conn.commit()
         cur.close()
