@@ -2205,17 +2205,22 @@ createApp({
         investMng.value.growth_check   = ex.growth_check ?? '';
         if (!investMng.value.name && ex.name) investMng.value.name = ex.name;
 
+        // 현재가는 market_meta(KIS 실시간 시세, FHKST01010100 stck_prpr)를 최우선으로 쓴다 —
+        // invest_point.price(analysis_history 저장 시점 가격)나 기존 저장값은 조회 시점이
+        // 달라 오래됐을 수 있어 폴백 용도로만 사용(market_meta 실패 시에만).
         if (data.market_meta) {
           investMng.value.market   = data.market_meta.market;
           investMng.value.size     = data.market_meta.size;
           investMng.value.industry = data.market_meta.industry;
           investMng.value.mktcap   = data.market_meta.mktcap;
+          investMng.value.price    = data.market_meta.price ?? null;
         } else {
           // 시장정보 조회 실패 시 기존 저장값이라도 유지
           investMng.value.market   = ex.market ?? '';
           investMng.value.size     = ex.size ?? '';
           investMng.value.industry = ex.industry ?? '';
           investMng.value.mktcap   = ex.mktcap ?? null;
+          investMng.value.price    = null;   // 아래 invest_point 처리에서 ip/ex 값으로 폴백
           if (data.market_meta_error) {
             investMngPointError.value = data.market_meta_error;
           }
@@ -2224,7 +2229,7 @@ createApp({
         const ip = data.invest_point || {};
         if (ip.error) {
           investMngPointError.value = [investMngPointError.value, ip.error].filter(Boolean).join(' / ');
-          investMng.value.price        = ex.price ?? null;
+          if (investMng.value.price == null) investMng.value.price = ex.price ?? null;
           investMng.value.sales_amt    = ex.sales_amt ?? null;
           investMng.value.ep_sales_amt = ex.ep_sales_amt ?? null;
           investMng.value.report_dt    = ex.report_dt ?? '';
@@ -2236,7 +2241,7 @@ createApp({
           investMng.value.run_at       = '';
         } else {
           investMngFromCache.value     = !!ip.from_cache;
-          investMng.value.price        = ip.price ?? null;
+          if (investMng.value.price == null) investMng.value.price = ip.price ?? null;
           investMng.value.sales_amt    = ip.sales_amt ?? null;
           investMng.value.ep_sales_amt = ip.ep_sales_amt ?? null;
           investMng.value.report_dt    = ip.report_dt || '';

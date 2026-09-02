@@ -721,8 +721,9 @@ def dashboard():
 
 
 def _get_market_meta(code):
-    """KIS 현재가 조회로 시장구분(market)/규모(size)/업종(industry)/시가총액(mktcap) 산출.
-    stock_info() 와 투자관리(invest-mng) 조회가 공유하는 헬퍼. 실패 시 RuntimeError."""
+    """KIS 현재가 조회로 시장구분(market)/규모(size)/업종(industry)/시가총액(mktcap)/
+    현재가(price) 산출. stock_info() 와 투자관리(invest-mng) 조회가 공유하는 헬퍼.
+    실패 시 RuntimeError."""
     ac = _get_api_account()
     if not ac:
         raise RuntimeError('API 계좌 정보 없음')
@@ -742,12 +743,16 @@ def _get_market_meta(code):
         mktcap = int(str(out.get('hts_avls', '0')).replace(',', ''))
     except Exception:
         mktcap = 0
+    try:
+        price = int(str(out.get('stck_prpr', '')).replace(',', ''))
+    except (TypeError, ValueError):
+        price = None
 
     if   mktcap >= 10000: size = '대형주'
     elif mktcap >= 3000:  size = '중형주'
     else:                 size = '소형주'
 
-    return {'market': market, 'size': size, 'industry': industry, 'mktcap': mktcap}
+    return {'market': market, 'size': size, 'industry': industry, 'mktcap': mktcap, 'price': price}
 
 
 @app.route('/api/stock-info')
