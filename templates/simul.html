@@ -583,14 +583,6 @@
 
   <h1><span>📈</span> 매매추적 시뮬레이션</h1>
 
-  <!-- 상단 제어 버튼 -->
-  <div class="top-ctrl">
-    <button class="btn-import"     @click="triggerImport" :disabled="loading">📂 가져오기</button>
-    <button class="btn-save-all"   @click="saveAll"       :disabled="loading">💾 전체저장</button>
-    <button class="btn-delete-all" @click="deleteAll"     :disabled="loading">🗑️ 전체삭제</button>
-    <input type="file" ref="fileInput" @change="importCsv" accept=".csv" style="display:none" />
-  </div>
-
   <!-- 투자관리 현황 -->
   <div class="dash-card">
     <div class="dash-header">
@@ -601,93 +593,6 @@
       </span>
     </div>
     <div ref="investMngGridEl" class="ag-theme-alpine" style="width:100%;height:340px"></div>
-  </div>
-
-  <!-- 대시보드 -->
-  <div class="dash-card">
-    <div class="dash-header">
-      <span class="dash-title">📊 시뮬레이션 현황</span>
-      <span style="display:flex;align-items:center;gap:8px">
-        <span class="dash-date-badge">{{ fmtDay(simDate) }} 기준</span>
-        <button class="dash-btn-refresh" @click="loadDashboard">새로고침</button>
-      </span>
-    </div>
-
-    <div v-if="!dashboard" class="dash-no-data">{{ simDate ? '데이터 없음 (' + fmtDay(simDate) + ')' : '수행일자를 설정하세요' }}</div>
-
-    <template v-else>
-      <!-- 자산 현황 -->
-      <div class="dash-summary">
-        <div class="dash-metric">
-          <div class="dash-metric-lbl">총평가금액</div>
-          <div class="dash-metric-val">{{ fmt(dashboard.acct?.tot_evlu_amt) }}</div>
-        </div>
-        <div class="dash-metric">
-          <div class="dash-metric-lbl">예수금</div>
-          <div class="dash-metric-val">{{ fmt(dashboard.acct?.prvs_excc_amt) }}</div>
-        </div>
-        <div class="dash-metric">
-          <div class="dash-metric-lbl">매수금액</div>
-          <div class="dash-metric-val">{{ fmt(dashboard.acct?.pchs_amt) }}</div>
-        </div>
-        <div class="dash-metric">
-          <div class="dash-metric-lbl">평가손익</div>
-          <div class="dash-metric-val" :class="(dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? 'pos' : 'neg'">
-            {{ (dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.evlu_pfls_amt) }}
-          </div>
-        </div>
-        <div class="dash-metric">
-          <div class="dash-metric-lbl">당일손익</div>
-          <div class="dash-metric-val" :class="(dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? 'pos' : 'neg'">
-            {{ (dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.total_profit_loss_amt) }}
-          </div>
-        </div>
-      </div>
-
-      <!-- 종목별 현황 -->
-      <div class="dash-stocks" v-if="dashboard.stocks.length > 0">
-        <table>
-          <thead>
-            <tr>
-              <th>종목코드</th><th>종목명</th>
-              <th>보유단가</th><th>보유수량</th><th>보유금액</th>
-              <th>수익율</th><th>수익금액</th><th>매도수량</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="s in dashboard.stocks" :key="s.code">
-              <td>{{ s.code }}</td>
-              <td>{{ s.name }}</td>
-              <td>{{ fmt(s.balance_price) }}</td>
-              <td>{{ fmt(s.balance_qty) }}</td>
-              <td>{{ fmt(s.balance_amt) }}</td>
-              <td :style="{color: s.value_rate >= 0 ? '#2dc653' : '#e63946', fontWeight:600}">
-                {{ s.value_rate >= 0 ? '+' : '' }}{{ s.value_rate.toFixed(2) }}%
-              </td>
-              <td :style="{color: s.value_amt >= 0 ? '#2dc653' : '#e63946'}">
-                {{ s.value_amt >= 0 ? '+' : '' }}{{ fmt(s.value_amt) }}
-              </td>
-              <td>{{ s.sell_qty > 0 ? fmt(s.sell_qty) : '-' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else class="dash-no-data" style="padding:8px 0">보유 종목 없음</div>
-    </template>
-  </div>
-
-  <!-- 알림 -->
-  <div v-if="alert.msg" :class="['alert', alert.type]">{{ alert.msg }}</div>
-
-  <!-- 전체저장 다운로드 패널 -->
-  <div v-if="downloadFiles.length" class="download-panel">
-    <span class="download-panel-title">📥 저장된 파일 다운로드</span>
-    <a v-for="r in downloadFiles" :key="r.file"
-       :href="r.download_url" download
-       class="download-link">
-      {{ r.table }} ({{ r.inserted }}건)
-    </a>
-    <button class="download-close" @click="downloadFiles = []">✕</button>
   </div>
 
   <!-- 투자관리 입력 -->
@@ -808,6 +713,101 @@
       <button class="btn-save" @click="applyInvestMng" :disabled="!investMng.code || !investMng.name">투자 정보 적용</button>
     </div>
     <div class="invest-mng-hint">종목코드/종목명 입력 시 시장정보와 투자분석 결과를 자동 조회합니다.</div>
+  </div>
+
+  <!-- 상단 제어 버튼 -->
+  <div class="top-ctrl">
+    <button class="btn-import"     @click="triggerImport" :disabled="loading">📂 가져오기</button>
+    <button class="btn-save-all"   @click="saveAll"       :disabled="loading">💾 전체저장</button>
+    <button class="btn-delete-all" @click="deleteAll"     :disabled="loading">🗑️ 전체삭제</button>
+    <input type="file" ref="fileInput" @change="importCsv" accept=".csv" style="display:none" />
+  </div>
+
+  <!-- 대시보드 -->
+  <div class="dash-card">
+    <div class="dash-header">
+      <span class="dash-title">📊 시뮬레이션 현황</span>
+      <span style="display:flex;align-items:center;gap:8px">
+        <span class="dash-date-badge">{{ fmtDay(simDate) }} 기준</span>
+        <button class="dash-btn-refresh" @click="loadDashboard">새로고침</button>
+      </span>
+    </div>
+
+    <div v-if="!dashboard" class="dash-no-data">{{ simDate ? '데이터 없음 (' + fmtDay(simDate) + ')' : '수행일자를 설정하세요' }}</div>
+
+    <template v-else>
+      <!-- 자산 현황 -->
+      <div class="dash-summary">
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">총평가금액</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.tot_evlu_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">예수금</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.prvs_excc_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">매수금액</div>
+          <div class="dash-metric-val">{{ fmt(dashboard.acct?.pchs_amt) }}</div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">평가손익</div>
+          <div class="dash-metric-val" :class="(dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? 'pos' : 'neg'">
+            {{ (dashboard.acct?.evlu_pfls_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.evlu_pfls_amt) }}
+          </div>
+        </div>
+        <div class="dash-metric">
+          <div class="dash-metric-lbl">당일손익</div>
+          <div class="dash-metric-val" :class="(dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? 'pos' : 'neg'">
+            {{ (dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.total_profit_loss_amt) }}
+          </div>
+        </div>
+      </div>
+
+      <!-- 종목별 현황 -->
+      <div class="dash-stocks" v-if="dashboard.stocks.length > 0">
+        <table>
+          <thead>
+            <tr>
+              <th>종목코드</th><th>종목명</th>
+              <th>보유단가</th><th>보유수량</th><th>보유금액</th>
+              <th>수익율</th><th>수익금액</th><th>매도수량</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in dashboard.stocks" :key="s.code">
+              <td>{{ s.code }}</td>
+              <td>{{ s.name }}</td>
+              <td>{{ fmt(s.balance_price) }}</td>
+              <td>{{ fmt(s.balance_qty) }}</td>
+              <td>{{ fmt(s.balance_amt) }}</td>
+              <td :style="{color: s.value_rate >= 0 ? '#2dc653' : '#e63946', fontWeight:600}">
+                {{ s.value_rate >= 0 ? '+' : '' }}{{ s.value_rate.toFixed(2) }}%
+              </td>
+              <td :style="{color: s.value_amt >= 0 ? '#2dc653' : '#e63946'}">
+                {{ s.value_amt >= 0 ? '+' : '' }}{{ fmt(s.value_amt) }}
+              </td>
+              <td>{{ s.sell_qty > 0 ? fmt(s.sell_qty) : '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else class="dash-no-data" style="padding:8px 0">보유 종목 없음</div>
+    </template>
+  </div>
+
+  <!-- 알림 -->
+  <div v-if="alert.msg" :class="['alert', alert.type]">{{ alert.msg }}</div>
+
+  <!-- 전체저장 다운로드 패널 -->
+  <div v-if="downloadFiles.length" class="download-panel">
+    <span class="download-panel-title">📥 저장된 파일 다운로드</span>
+    <a v-for="r in downloadFiles" :key="r.file"
+       :href="r.download_url" download
+       class="download-link">
+      {{ r.table }} ({{ r.inserted }}건)
+    </a>
+    <button class="download-close" @click="downloadFiles = []">✕</button>
   </div>
 
   <!-- 입력 폼 -->
