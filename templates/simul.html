@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>매매추적 시뮬레이션</title>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@30.2.1/dist/ag-grid-community.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@30.2.1/styles/ag-grid.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@30.2.1/styles/ag-theme-alpine.css">
   <style>
+    .ag-theme-alpine { --ag-font-size: 13px; }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
@@ -585,6 +589,18 @@
     <button class="btn-save-all"   @click="saveAll"       :disabled="loading">💾 전체저장</button>
     <button class="btn-delete-all" @click="deleteAll"     :disabled="loading">🗑️ 전체삭제</button>
     <input type="file" ref="fileInput" @change="importCsv" accept=".csv" style="display:none" />
+  </div>
+
+  <!-- 투자관리 현황 -->
+  <div class="dash-card">
+    <div class="dash-header">
+      <span class="dash-title">📋 투자관리 현황</span>
+      <span style="display:flex;align-items:center;gap:8px">
+        <span v-if="investMngListLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
+        <button class="dash-btn-refresh" @click="loadInvestMngList" :disabled="investMngListLoading">새로고침</button>
+      </span>
+    </div>
+    <div ref="investMngGridEl" class="ag-theme-alpine" style="width:100%;height:340px"></div>
   </div>
 
   <!-- 대시보드 -->
@@ -1812,6 +1828,11 @@ createApp({
     const today    = new Date().toISOString().slice(0, 10);
     const fileInput = ref(null);
 
+    // ── 투자관리 현황 (AgGrid) ──
+    const investMngGridEl      = ref(null);
+    const investMngListLoading = ref(false);
+    let investMngGridApi       = null;
+
     const form = ref({
       code: '', name: '', buy_price: null, loss_price: null,
       buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: ''
@@ -1861,6 +1882,77 @@ createApp({
       if (!sales || epSales == null) return null;
       return Math.round((epSales - sales) / sales * 1000) / 10;
     });
+
+    // ── 투자관리 현황 그리드 ──
+    function _fmtPct(v) { return v != null ? v + '%' : '-'; }
+    function _fmtWon(v) { return v != null ? Number(v).toLocaleString('ko-KR') : '-'; }
+
+    function initInvestMngGrid() {
+      if (!investMngGridEl.value || typeof agGrid === 'undefined') return;
+      // ag-grid-community@30 은 createGrid()가 아니라 new agGrid.Grid() 방식으로
+      // 생성하며, 생성 후 gridOptions.api 에 API 참조가 채워진다(v31+ 의
+      // createGrid()는 이 버전에 없음).
+      const gridOptions = {
+        columnDefs: [
+          { headerName: '종목코드', field: 'code', width: 100 },
+          { headerName: '종목명',   field: 'name', width: 130 },
+          { headerName: '주요사업', field: 'main_business', flex: 1, minWidth: 160 },
+          { headerName: '상단가',   field: 'high_price',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '현재가',   field: 'price',         width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '상승잔존율', field: 'remain_rate',   width: 110, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
+          { headerName: '매출증가율', field: 'sales_rate',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
+          { headerName: '배당율',   field: 'dividend_rate', width: 90,  type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
+        ],
+        defaultColDef: { sortable: true, resizable: true },
+        rowData: [],
+        rowSelection: 'single',
+        onRowClicked: (e) => applyInvestMngRow(e.data),
+      };
+      new agGrid.Grid(investMngGridEl.value, gridOptions);
+      investMngGridApi = gridOptions.api;
+    }
+
+    async function loadInvestMngList() {
+      investMngListLoading.value = true;
+      try {
+        const res  = await fetch('/api/invest-mng/list');
+        const data = await res.json();
+        if (Array.isArray(data) && investMngGridApi) {
+          investMngGridApi.setRowData(data);
+        }
+      } catch { /* 무시 */ } finally {
+        investMngListLoading.value = false;
+      }
+    }
+
+    // 투자관리 현황 그리드에서 선택한 행을 하단 투자 관리 입력 폼에 반영
+    function applyInvestMngRow(row) {
+      if (!row) return;
+      investMngPointError.value          = '';
+      investMng.value.code               = row.code;
+      investMng.value.name               = row.name;
+      investMng.value.main_business      = row.main_business ?? '';
+      investMng.value.high_price         = row.high_price ?? null;
+      investMng.value.market             = row.market ?? '';
+      investMng.value.size               = row.size ?? '';
+      investMng.value.industry           = row.industry ?? '';
+      investMng.value.mktcap             = row.mktcap ?? null;
+      investMng.value.price              = row.price ?? null;
+      investMng.value.sales_amt          = row.sales_amt ?? null;
+      investMng.value.ep_sales_amt       = row.ep_sales_amt ?? null;
+      investMng.value.report_dt          = row.report_dt ?? '';
+      investMng.value.invest_issue       = row.invest_issue ?? '';
+      investMng.value.invest_point       = row.invest_point ?? '';
+      investMng.value.invest_risk        = row.invest_risk ?? '';
+      investMng.value.dividend_rate      = row.dividend_rate ?? null;
+      investMng.value.remain_rate_eligible = row.remain_rate != null;
+      investMng.value.value_check        = row.value_check ?? '';
+      investMng.value.dividend_check     = row.dividend_check ?? '';
+      investMng.value.growth_check       = row.growth_check ?? '';
+      investMng.value.check_dt           = row.check_dt ?? '';
+      investMng.value.exclude            = row.proc_yn === 'N';
+      investMng.value.run_at             = '';
+    }
 
     const INVEST_POINT_STALE_DAYS = 7;   // 백엔드 _INVEST_POINT_STALE_DAYS 와 동일 기준
     const investMngStaleDays = computed(() => {
@@ -2627,6 +2719,8 @@ createApp({
     onMounted(async () => {
       await loadList();
       loadDashboard();
+      initInvestMngGrid();
+      loadInvestMngList();
     });
 
     return {
@@ -2637,6 +2731,7 @@ createApp({
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
+      investMngGridEl, investMngListLoading, loadInvestMngList,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,

@@ -878,6 +878,23 @@ def _parse_investment_summary(summary):
 
 _INVEST_POINT_STALE_DAYS = 7  # analysis_history 최신 이력이 이보다 오래되면 재분석
 
+
+def _grew_or_similar(base, nxt, tolerance=-0.05):
+    """base(기준값) 대비 nxt(비교값)가 증가 또는 유사(-5% 이내 하락까지 허용)한지 판정.
+    상승잔존율/배당율 표시 게이트(매출액-1→+1)와 투자관리 현황 목록에서 공유하는 헬퍼.
+    base가 적자(0 이하)면 비율 비교가 부호 때문에 왜곡되므로 절대 개선 여부(nxt >= base)로
+    판단한다(적자 축소·흑자전환은 통과, 적자 확대만 탈락)."""
+    if base is None or nxt is None:
+        return False
+    try:
+        base_f, nxt_f = float(base), float(nxt)
+    except (TypeError, ValueError):
+        return False
+    if base_f <= 0:
+        return nxt_f >= base_f
+    return (nxt_f - base_f) / base_f >= tolerance
+
+
 def _get_invest_point_fields(code):
     """analysis_history 최신 이력을 우선 조회하고, 이력이 전혀 없거나 최신 이력의
     run_at이 현재일 기준 _INVEST_POINT_STALE_DAYS일보다 오래된 종목이면 그때만
@@ -931,19 +948,6 @@ def _get_invest_point_fields(code):
     # 매출액이 -1(금년 실측) → +1(내년 추정)에서 증가 또는 유사(-5% 이내 하락까지
     # 허용)한지 판정 — 실적이 뚜렷이 꺾이는 종목은 상승잔존율/배당율 모두 표시하지
     # 않는다(전고점 대비 상승여력·배당 매력을 보여주는 게 오도의 소지가 있으므로).
-    def _grew_or_similar(base, nxt, tolerance=-0.05):
-        if base is None or nxt is None:
-            return False
-        try:
-            base_f, nxt_f = float(base), float(nxt)
-        except (TypeError, ValueError):
-            return False
-        if base_f <= 0:
-            # 기준연도가 적자(0 이하)면 비율 비교가 의미 없음(부호 왜곡) → 절대 개선 여부로 판단.
-            # 적자 축소·흑자전환은 통과, 적자 확대만 탈락.
-            return nxt_f >= base_f
-        return (nxt_f - base_f) / base_f >= tolerance
-
     sales_grew_or_similar = _grew_or_similar(row.get('매출액-1'), row.get('매출액+1'))
 
     # 배당율(dividend_rate): DPS-5~DPS-1(과거 5개년 실적)이 모두 존재하고 0보다 크며
@@ -987,6 +991,84 @@ def _num_or_none(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+@app.route('/api/invest-mng/list')
+def invest_mng_list():
+    """투자관리 현황: invest_mng(proc_yn='Y') 전체 목록 + 종목별 실시간 현재가·
+    현재가 기준 상승잔존율. mvp_graph 재분석 등 무거운 side-effect가 있는
+    _get_invest_point_fields()는 목록 조회에서 호출하지 않는다(다건 조회 시
+    LLM 분석이 동시 다발적으로 트리거되는 것을 방지)."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT code, name, main_business, high_price, market, size, industry, mktcap,
+                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                   dividend_rate, sales_rate,
+                   value_check, dividend_check, growth_check, check_dt, proc_yn
+            FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    if not rows:
+        return jsonify([])
+
+    ac = _get_api_account()
+    try:
+        analysis_history = _import_analysis_history()
+    except Exception:
+        analysis_history = None
+
+    def _enrich(r):
+        (code, name, main_business, high_price, market, size, industry, mktcap,
+         sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+         dividend_rate, sales_rate, value_check, dividend_check, growth_check,
+         check_dt, proc_yn) = r
+
+        price = None
+        if ac:
+            out = _fetch_cur_price_out(ac, code)
+            if out:
+                try:
+                    price = int(str(out.get('stck_prpr', '')).replace(',', ''))
+                except (TypeError, ValueError):
+                    price = None
+
+        # 상승잔존율: 실시간 현재가 기준 계산, 매출액-1→+1 증가/유사(단일 lookup과
+        # 동일 게이트) 조건을 만족할 때만 값을 채운다(analysis_history 단순 조회라
+        # side-effect 없음).
+        remain_rate = None
+        if analysis_history and price and high_price is not None:
+            try:
+                ah_rows = analysis_history.get_recent(code, limit=1)
+                if ah_rows and _grew_or_similar(ah_rows[0].get('매출액-1'), ah_rows[0].get('매출액+1')):
+                    remain_rate = round((float(high_price) - price) / price * 100, 1)
+            except Exception:
+                remain_rate = None
+
+        return {
+            'code': code, 'name': name, 'main_business': main_business, 'high_price': high_price,
+            'market': market, 'size': size, 'industry': industry, 'mktcap': mktcap,
+            'price': price,
+            'sales_amt': sales_amt, 'ep_sales_amt': ep_sales_amt, 'report_dt': report_dt,
+            'invest_issue': invest_issue, 'invest_point': invest_point, 'invest_risk': invest_risk,
+            'remain_rate': remain_rate, 'dividend_rate': dividend_rate, 'sales_rate': sales_rate,
+            'value_check': value_check, 'dividend_check': dividend_check, 'growth_check': growth_check,
+            'check_dt': check_dt, 'proc_yn': proc_yn,
+        }
+
+    with ThreadPoolExecutor(max_workers=min(len(rows), 8)) as ex:
+        results = list(ex.map(_enrich, rows))
+
+    # 상승잔존율(remain_rate) 내림차순 정렬 — 표시 불가(None)인 종목은 맨 뒤로
+    results.sort(key=lambda r: (r['remain_rate'] is None, -(r['remain_rate'] or 0)))
+
+    return jsonify(results)
 
 
 @app.route('/api/invest-mng')
