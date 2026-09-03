@@ -184,7 +184,8 @@ try:
     rows = cur.fetchall()
     cur.close()
 
-    print(f"[dly_invest_mng] {today} 스냅샷 생성 시작 - 대상 {len(rows)}건")
+    _now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[dly_invest_mng] {_now_str} 스냅샷 생성 시작 - 대상 {len(rows)}건")
 
     now = datetime.now()
     ok, fallback, failed, synced = 0, 0, 0, 0
