@@ -641,7 +641,15 @@
       </div>
 
       <div class="field">
-        <label>상단가 (원)</label>
+        <label>매수하단 (원)</label>
+        <input v-model.number="investMng.down_range" type="number" min="0" placeholder="예) 90000" />
+      </div>
+      <div class="field">
+        <label>매수상단 (원)</label>
+        <input v-model.number="investMng.up_range" type="number" min="0" placeholder="예) 90000" />
+      </div>
+      <div class="field">
+        <label>목표가 (원)</label>
         <input v-model.number="investMng.high_price" type="number" min="0" placeholder="예) 90000" />
       </div>
       <div class="field">
@@ -1853,7 +1861,7 @@ createApp({
 
     // ── 투자관리(invest_mng) 입력 ──
     const investMng = ref({
-      code: '', name: '', main_business: '', high_price: null,
+      code: '', name: '', main_business: '', down_range:null, up_range:null, high_price: null,
       market: '', size: '', industry: '', mktcap: null,
       price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
       invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
@@ -1865,13 +1873,15 @@ createApp({
     const investMngPointError = ref('');
     const investMngFromCache  = ref(true);
 
-    // 상승잔존율: 현재가 대비 상단가(전고점)까지 남은 상승 여력.
+    // 상승잔존율: 현재가 대비 목표가(전고점)까지 남은 상승 여력.
     // remain_rate_eligible(백엔드 판정: 상장 5년 이상 근사 + 매출액·영업이익·당기순이익
     // -1→+1이 증가 또는 유사(-5% 이내 하락까지 허용))을 만족할 때만 값을 반환한다.
     const investMngRemainRate = computed(() => {
       if (!investMng.value.remain_rate_eligible) return null;
       const price = investMng.value.price;
       const high  = investMng.value.high_price;
+      const down_range  = investMng.value.down_range;
+      const up_range  = investMng.value.up_range;
       if (!price || high == null) return null;
       return Math.round((high - price) / price * 1000) / 10;
     });
@@ -1897,7 +1907,9 @@ createApp({
           { headerName: '종목코드', field: 'code', width: 100 },
           { headerName: '종목명',   field: 'name', width: 130 },
           { headerName: '주요사업', field: 'main_business', flex: 1, minWidth: 160 },
-          { headerName: '상단가',   field: 'high_price',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '매수하단',   field: 'down_range',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '매수상단',   field: 'up_range',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '목표가',   field: 'high_price',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
           { headerName: '현재가',   field: 'price',         width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
           { headerName: '상승잔존율', field: 'remain_rate',   width: 110, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '매출증가율', field: 'sales_rate',    width: 110, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
@@ -1932,6 +1944,8 @@ createApp({
       investMng.value.code               = row.code;
       investMng.value.name               = row.name;
       investMng.value.main_business      = row.main_business ?? '';
+      investMng.value.down_range         = row.down_range ?? null;
+      investMng.value.up_range           = row.up_range ?? null;
       investMng.value.high_price         = row.high_price ?? null;
       investMng.value.market             = row.market ?? '';
       investMng.value.size               = row.size ?? '';
@@ -2287,6 +2301,8 @@ createApp({
 
         const ex = data.existing || {};
         investMng.value.main_business  = ex.main_business ?? '';
+        investMng.value.down_range     = ex.down_range ?? null;
+        investMng.value.up_range       = ex.up_range ?? null;
         investMng.value.high_price     = ex.high_price ?? null;
         investMng.value.check_dt       = ex.check_dt ?? '';
         investMng.value.exclude        = ex.proc_yn === 'N';

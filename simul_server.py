@@ -1006,7 +1006,7 @@ def invest_mng_list():
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                    dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, check_dt, proc_yn
+                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
         """)
         rows = cur.fetchall()
@@ -1028,7 +1028,7 @@ def invest_mng_list():
         (code, name, main_business, high_price, market, size, industry, mktcap,
          sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
-         check_dt, proc_yn) = r
+         check_dt, proc_yn, down_range, up_range) = r
 
         price = None
         if ac:
@@ -1059,7 +1059,7 @@ def invest_mng_list():
             'invest_issue': invest_issue, 'invest_point': invest_point, 'invest_risk': invest_risk,
             'remain_rate': remain_rate, 'dividend_rate': dividend_rate, 'sales_rate': sales_rate,
             'value_check': value_check, 'dividend_check': dividend_check, 'growth_check': growth_check,
-            'check_dt': check_dt, 'proc_yn': proc_yn,
+            'check_dt': check_dt, 'proc_yn': proc_yn, 'down_range': down_range, 'up_range': up_range,
         }
 
     with ThreadPoolExecutor(max_workers=min(len(rows), 8)) as ex:
@@ -1086,7 +1086,7 @@ def invest_mng_info():
                    price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                    invest_risk, check_dt, proc_yn,
                    remain_rate, dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check
+                   value_check, dividend_check, growth_check, down_range, up_range
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -1105,7 +1105,7 @@ def invest_mng_info():
             'report_dt': row[11], 'invest_issue': row[12], 'invest_point': row[13],
             'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
             'remain_rate': row[17], 'dividend_rate': row[18], 'sales_rate': row[19],
-            'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22],
+            'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22], 'down_range': row[23], 'up_range': row[24],
         }
 
     market_meta, market_meta_error = None, ''
@@ -1156,6 +1156,8 @@ def invest_mng_apply():
     check_dt      = datetime.now().strftime('%Y%m%d')
     exclude       = bool(data.get('exclude'))
     proc_yn       = 'N' if exclude else 'Y'
+    down_range    = _num_or_none(data.get('down_range'))
+    up_range      = _num_or_none(data.get('up_range'))
 
     conn = get_conn()
     try:
@@ -1171,13 +1173,13 @@ def invest_mng_apply():
                     report_dt = %s, invest_issue = %s, invest_point = %s, invest_risk = %s,
                     remain_rate = %s, dividend_rate = %s, sales_rate = %s,
                     value_check = %s, dividend_check = %s, growth_check = %s,
-                    check_dt = %s, proc_yn = %s, mod_dt = %s
+                    check_dt = %s, proc_yn = %s, mod_dt = %s, down_range = %s, up_range = %s
                 WHERE code = %s AND proc_yn = 'Y'
             """, (name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
                   value_check, dividend_check, growth_check,
-                  check_dt, proc_yn, datetime.now(), code))
+                  check_dt, proc_yn, datetime.now(), down_range, up_range, code))
         else:
             cur.execute("""
                 INSERT INTO public.invest_mng
@@ -1185,13 +1187,13 @@ def invest_mng_apply():
                      price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                      invest_risk, remain_rate, dividend_rate, sales_rate,
                      value_check, dividend_check, growth_check,
-                     check_dt, proc_yn, crt_dt, mod_dt)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     check_dt, proc_yn, crt_dt, mod_dt, down_range, up_range)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (code, name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
                   value_check, dividend_check, growth_check,
-                  check_dt, proc_yn, datetime.now(), datetime.now()))
+                  check_dt, proc_yn, datetime.now(), datetime.now(), down_range, up_range))
         conn.commit()
         cur.close()
     except Exception as e:
