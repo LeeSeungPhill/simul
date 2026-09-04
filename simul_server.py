@@ -1774,6 +1774,42 @@ def stock_scores():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/stock-search')
+def api_stock_search():
+    """종목 검색: stock_search_form 에서 search_day 기준 조회."""
+    date = request.args.get('date', '').replace('-', '')
+    if not date or len(date) != 8 or not date.isdigit():
+        return jsonify({'error': '날짜 형식 오류'}), 400
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute("""
+            SELECT code, name, current_price, day_rate, volumn, crt_dt, signal_price, signal_time
+            FROM public.stock_search_form
+            WHERE search_day = %s
+            ORDER BY crt_dt DESC
+        """, (date,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return jsonify([
+        {
+            'code':          (r[0] or '').strip(),
+            'name':          (r[1] or '').strip(),
+            'current_price': r[2],
+            'day_rate':      float(r[3]) if r[3] is not None else None,
+            'volumn':        int(r[4]) if r[4] is not None else None,
+            'crt_dt':        r[5].strftime('%Y-%m-%d %H:%M:%S') if r[5] else None,
+            'signal_price':  r[6],
+            'signal_time':   (r[7] or '').strip() if r[7] else None,
+        }
+        for r in rows
+    ])
+
+
 @app.route('/api/active-stocks')
 def api_active_stocks():
     """매도/변경 대상 활성 종목 조회 (trail_tp IN ('1','2','L'))."""

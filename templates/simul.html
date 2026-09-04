@@ -583,6 +583,19 @@
 
   <h1><span>📈</span> 매매추적 시뮬레이션</h1>
 
+  <!-- 종목검색 -->
+  <div class="dash-card">
+    <div class="dash-header">
+      <span class="dash-title">🔍 종목검색</span>
+      <span style="display:flex;align-items:center;gap:8px">
+        <input type="date" v-model="stockSearchDate" style="padding:5px 8px;border:1.5px solid #e0e0e0;border-radius:6px;font-size:.82rem" />
+        <span v-if="stockSearchLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
+        <button class="dash-btn-refresh" @click="loadStockSearchList" :disabled="stockSearchLoading">새로고침</button>
+      </span>
+    </div>
+    <div ref="stockSearchGridEl" class="ag-theme-alpine" style="width:100%;height:340px"></div>
+  </div>
+
   <!-- 투자관리 현황 -->
   <div class="dash-card">
     <div class="dash-header">
@@ -1841,6 +1854,12 @@ createApp({
     const investMngListLoading = ref(false);
     let investMngGridApi       = null;
 
+    // ── 종목검색 (AgGrid) ──
+    const stockSearchGridEl  = ref(null);
+    const stockSearchLoading = ref(false);
+    const stockSearchDate    = ref(today);
+    let stockSearchGridApi   = null;
+
     const form = ref({
       code: '', name: '', buy_price: null, loss_price: null,
       buy_amount: null, loss_input_amt: null, buy_date: today, buy_time: ''
@@ -1936,6 +1955,56 @@ createApp({
         investMngListLoading.value = false;
       }
     }
+
+    // ── 종목검색 그리드 ──
+    function _fmtHM(v) {
+      // crt_dt: "2026-09-04 14:55:59" → "14:55" / signal_time: "1505"(HHMM) → "15:05"
+      if (v == null || v === '') return '-';
+      const s = String(v);
+      if (/^\d{3,4}$/.test(s)) {
+        const p = s.padStart(4, '0');
+        return `${p.slice(0, 2)}:${p.slice(2, 4)}`;
+      }
+      const m = s.match(/(\d{2}):(\d{2})(?::\d{2})?$/);
+      return m ? `${m[1]}:${m[2]}` : s;
+    }
+
+    function initStockSearchGrid() {
+      if (!stockSearchGridEl.value || typeof agGrid === 'undefined') return;
+      const gridOptions = {
+        columnDefs: [
+          { headerName: '종목코드', field: 'code', width: 100 },
+          { headerName: '종목명',   field: 'name', width: 130 },
+          { headerName: '현재가',   field: 'current_price', width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '등락율',   field: 'day_rate',      width: 90,  type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
+          { headerName: '거래량',   field: 'volumn',        width: 120, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '생성일시', field: 'crt_dt',        width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
+          { headerName: '신호가',   field: 'signal_price',  width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '신호일시', field: 'signal_time',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
+        ],
+        defaultColDef: { sortable: true, resizable: true },
+        rowData: [],
+      };
+      new agGrid.Grid(stockSearchGridEl.value, gridOptions);
+      stockSearchGridApi = gridOptions.api;
+    }
+
+    async function loadStockSearchList() {
+      if (!stockSearchDate.value) return;
+      stockSearchLoading.value = true;
+      try {
+        const dateStr = stockSearchDate.value.replace(/-/g, '');
+        const res  = await fetch(`/api/stock-search?date=${dateStr}`);
+        const data = await res.json();
+        if (Array.isArray(data) && stockSearchGridApi) {
+          stockSearchGridApi.setRowData(data);
+        }
+      } catch { /* 무시 */ } finally {
+        stockSearchLoading.value = false;
+      }
+    }
+
+    watch(stockSearchDate, loadStockSearchList);
 
     // 투자관리 현황 그리드에서 선택한 행을 하단 투자 관리 입력 폼에 반영
     function applyInvestMngRow(row) {
@@ -2737,6 +2806,8 @@ createApp({
       loadDashboard();
       initInvestMngGrid();
       loadInvestMngList();
+      initStockSearchGrid();
+      loadStockSearchList();
     });
 
     return {
@@ -2748,6 +2819,7 @@ createApp({
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
       investMngGridEl, investMngListLoading, loadInvestMngList,
+      stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
