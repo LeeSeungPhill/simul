@@ -586,7 +586,7 @@
   <!-- 종목검색 -->
   <div class="dash-card">
     <div class="dash-header">
-      <span class="dash-title">🔍 종목검색</span>
+      <span class="dash-title">🔍 종목검색 <span style="font-weight:400;color:#888;font-size:.8rem">(총 {{ stockSearchTotalCount }}건)</span></span>
       <span style="display:flex;align-items:center;gap:8px">
         <input type="date" v-model="stockSearchDate" style="padding:5px 8px;border:1.5px solid #e0e0e0;border-radius:6px;font-size:.82rem" />
         <span v-if="stockSearchLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
@@ -599,7 +599,7 @@
   <!-- 투자관리 현황 -->
   <div class="dash-card">
     <div class="dash-header">
-      <span class="dash-title">📋 투자관리 현황</span>
+      <span class="dash-title">📋 투자관리 현황 <span style="font-weight:400;color:#888;font-size:.8rem">(총 {{ investMngTotalCount }}건)</span></span>
       <span style="display:flex;align-items:center;gap:8px">
         <span v-if="investMngListLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
         <button class="dash-btn-refresh" @click="loadInvestMngList" :disabled="investMngListLoading">새로고침</button>
@@ -1855,10 +1855,11 @@ createApp({
     let investMngGridApi       = null;
 
     // ── 종목검색 (AgGrid) ──
-    const stockSearchGridEl  = ref(null);
-    const stockSearchLoading = ref(false);
-    const stockSearchDate    = ref(today);
-    let stockSearchGridApi   = null;
+    const stockSearchGridEl    = ref(null);
+    const stockSearchLoading   = ref(false);
+    const stockSearchDate      = ref(today);
+    const stockSearchTotalCount = ref(0);
+    let stockSearchGridApi     = null;
 
     const form = ref({
       code: '', name: '', buy_price: null, loss_price: null,
@@ -1916,6 +1917,16 @@ createApp({
     function _fmtPct(v) { return v != null ? v + '%' : '-'; }
     function _fmtWon(v) { return v != null ? Number(v).toLocaleString('ko-KR') : '-'; }
 
+    // AgGrid 페이지네이션 패널 한글화 (두 그리드 공용)
+    const AG_GRID_LOCALE_KO = {
+      page: '페이지', more: '더보기', to: '~', of: '/',
+      next: '다음', last: '마지막', first: '처음', previous: '이전',
+      pageSizeSelectorLabel: '페이지당 건수', ariaPageSizeSelectorLabel: '페이지당 건수',
+      loadingOoo: '로딩중...', noRowsToShow: '표시할 데이터가 없습니다',
+    };
+
+    const investMngTotalCount = ref(0);
+
     function initInvestMngGrid() {
       if (!investMngGridEl.value || typeof agGrid === 'undefined') return;
       // ag-grid-community@30 은 createGrid()가 아니라 new agGrid.Grid() 방식으로
@@ -1937,6 +1948,10 @@ createApp({
         defaultColDef: { sortable: true, resizable: true },
         rowData: [],
         rowSelection: 'single',
+        pagination: true,
+        paginationPageSize: 10,
+        paginationPageSizeSelector: false,
+        localeText: AG_GRID_LOCALE_KO,
         onRowClicked: (e) => applyInvestMngRow(e.data),
       };
       new agGrid.Grid(investMngGridEl.value, gridOptions);
@@ -1950,6 +1965,7 @@ createApp({
         const data = await res.json();
         if (Array.isArray(data) && investMngGridApi) {
           investMngGridApi.setRowData(data);
+          investMngTotalCount.value = data.length;
         }
       } catch { /* 무시 */ } finally {
         investMngListLoading.value = false;
@@ -1984,6 +2000,10 @@ createApp({
         ],
         defaultColDef: { sortable: true, resizable: true },
         rowData: [],
+        pagination: true,
+        paginationPageSize: 10,
+        paginationPageSizeSelector: false,
+        localeText: AG_GRID_LOCALE_KO,
       };
       new agGrid.Grid(stockSearchGridEl.value, gridOptions);
       stockSearchGridApi = gridOptions.api;
@@ -1998,6 +2018,7 @@ createApp({
         const data = await res.json();
         if (Array.isArray(data) && stockSearchGridApi) {
           stockSearchGridApi.setRowData(data);
+          stockSearchTotalCount.value = data.length;
         }
       } catch { /* 무시 */ } finally {
         stockSearchLoading.value = false;
@@ -2818,8 +2839,8 @@ createApp({
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
-      investMngGridEl, investMngListLoading, loadInvestMngList,
-      stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList,
+      investMngGridEl, investMngListLoading, loadInvestMngList, investMngTotalCount,
+      stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList, stockSearchTotalCount,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
