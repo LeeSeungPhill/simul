@@ -2463,7 +2463,7 @@ def _analysis_history_invest_points(code: str) -> dict:
             SELECT investment_summary, report,
                    CASE WHEN to_char(run_at, 'YYYYMMDD') >= to_char(date_trunc('day', current_date - interval '7 day'), 'YYYYMMDD') THEN '1' ELSE '2' END
             FROM analysis_history
-            WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary != ''
+            WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary NOT LIKE '%미생성%'
             ORDER BY id DESC LIMIT 1
         """, (code,))
         row = cur.fetchone()
