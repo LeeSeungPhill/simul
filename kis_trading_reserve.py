@@ -363,6 +363,29 @@ def register_missing_reserves(nick, ac, conn):
             continue
         ord_dvsn_cd = "01" if ord_price == 0 else "00"
 
+        # 등록 직전 해당 종목만 재조회 — 루프 시작 시점에 딱 한 번 뜬 스냅샷(df)이
+        # 이 시점엔 오래됐을 수 있다(스크립트 이중 실행·트리거 중복 등으로 그 사이
+        # 이미 등록됐는데 df엔 아직 안 잡힌 경우). 그대로 등록을 시도하면 KIS가
+        # "중복된 자료가 존재합니다"(오류코드 7)로 거부한다(실측: mamalong 하이브[352820]).
+        try:
+            recheck_output = order_reserve_complete(
+                access_token, app_key, app_secret,
+                reserve_strt_dt, reserve_end_dt, str(acct_no), code
+            )
+        except Exception as e:
+            print(f"  ⚠️ [{nick}] {name}[{code}] 등록 직전 재조회 오류(그대로 진행): {e}")
+            recheck_output = None
+        if recheck_output:
+            recheck_df = pd.DataFrame(recheck_output)
+            recheck_matched = recheck_df[
+                (recheck_df['pdno'] == code) &
+                (recheck_df['sll_buy_dvsn_cd'] == '01') &
+                (recheck_df['cncl_ord_dt'] == "")
+            ]
+            if not recheck_matched.empty:
+                print(f"  ⏭ [{nick}] {name}[{code}] 등록 직전 재조회에서 이미 예약 존재 확인 → 스킵")
+                continue
+
         try:
             rsv_result = order_reserve(
                 access_token, app_key, app_secret, str(acct_no), code,
