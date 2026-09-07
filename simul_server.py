@@ -2415,9 +2415,6 @@ def _invest_analysis_worker():
                 print(f"[투자분석] {code} 실행 실패(rc={result.returncode}): {err}")
             else:
                 print(f"[투자분석] {code} 실행 완료 — 다음 조회부터 반영")
-                # 오늘자 캐시를 지워 다음 조회 시 새로 저장된 investment_summary를 읽게 한다
-                today_key = f"{code}:{datetime.now().strftime('%Y%m%d')}"
-                _analysis_history_invest_points_cache.pop(today_key, None)
         except subprocess.TimeoutExpired:
             print(f"[투자분석] {code} 실행 시간 초과 ({_INVEST_ANALYSIS_TIMEOUT}초)")
         except Exception as e:
@@ -2430,8 +2427,6 @@ def _invest_analysis_worker():
 
 _threading.Thread(target=_invest_analysis_worker, daemon=True).start()
 
-
-_analysis_history_invest_points_cache: dict = {}
 
 def _extract_bracket_points(text: str, tag: str) -> list:
     """LLM 리포트/투자포인트 요약 텍스트에서 [tag] 섹션을 찾아 문장 단위로 분리."""
@@ -2451,9 +2446,6 @@ def _analysis_history_invest_points(code: str) -> dict:
     섹션이기 때문). 최신 기록이 오늘자가 아니면 있는 데이터로 우선 응답하고, mvp_graph 분석을
     백그라운드 대기열에 등록한다 — LLM 실행이 느려 요청을 막지 않고, 생성 결과는 다음
     조회부터 반영된다."""
-    today_key = f"{code}:{datetime.now().strftime('%Y%m%d')}"
-    if today_key in _analysis_history_invest_points_cache:
-        return _analysis_history_invest_points_cache[today_key]
 
     result = {'invest_points': [], 'core_issues': [], 'risks': []}
     try:
@@ -2463,9 +2455,9 @@ def _analysis_history_invest_points(code: str) -> dict:
             SELECT investment_summary, report,
                    CASE WHEN to_char(run_at, 'YYYYMMDD') >= to_char(date_trunc('day', current_date - interval '7 day'), 'YYYYMMDD') THEN '1' ELSE '2' END
             FROM analysis_history
-            WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary NOT LIKE '%미생성%'
+            WHERE stock_code = %s AND investment_summary IS NOT NULL AND investment_summary NOT LIKE %s
             ORDER BY id DESC LIMIT 1
-        """, (code,))
+        """, (code, '%미생성%'))
         row = cur.fetchone()
         cur.close()
         conn.close()
@@ -2481,7 +2473,6 @@ def _analysis_history_invest_points(code: str) -> dict:
     except Exception as e:
         print(f"[기업정보] analysis_history 조회 오류: {e}")
 
-    _analysis_history_invest_points_cache[today_key] = result
     return result
 
 
