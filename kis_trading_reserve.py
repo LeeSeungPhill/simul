@@ -8,15 +8,20 @@ kis_trading_reserve.py
     상한가~하한가 범위(하한가 이상 ~ 상한가 이하)를 벗어난 건을 취소한다.
     시장가 예약(주문가 0)은 가격범위 체크 대상이 아니므로 스킵.
 
-  15:50 실행 (mode="1550")
+  15:55 실행 (mode="1555")
     stockBalance_stock_balance 에 reserve_price/reserve_qty/reserve_date 가
     설정된 종목 중, 실제 계좌에 매도 예약주문(미취소)이 존재하지 않는 종목에
     대해서만 해당 값 그대로 예약매도 주문을 신규 등록한다(이미 있으면 중복 등록 안 함).
+    기존 15:50에서 15:55로 5분 늦춘 이유: reservebot.py 로 사람이 텔레그램에서
+    직접 예약매도를 걸 때도 예약주문 유효 시작 시각(15:40) 직후에 몰리는 경향이
+    있어, 이 배치가 너무 붙어 돌면 사람이 막 등록한 건과 겹쳐 "중복된 자료가
+    존재합니다" 충돌 가능성이 있다(완전한 해결책은 아니라 코드 쪽 재조회/진단
+    로그도 함께 유지한다 — 실제 원인은 아직 미확정).
 
 실행
   python kis_trading_reserve.py
   동작 모드는 인자가 아닌 실행 시각(HHMM) 기준으로 자동 결정된다: 06~10시대→0720(가격이탈 취소),
-  그 외 시각→1550(누락 등록). Task Scheduler 에 07:20, 15:50 두 트리거로 등록해 실행한다.
+  그 외 시각→1555(누락 등록). Task Scheduler 에 07:20, 15:55 두 트리거로 등록해 실행한다.
 
 주의
   - reservebot.py 의 order_reserve()/order_reserve_cancel_revice()/order_reserve_complete()
@@ -31,6 +36,7 @@ kis_trading_reserve.py
 
 import time
 import json
+import threading
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pandas as pd
@@ -220,6 +226,28 @@ def send_telegram(token, chat_id, text, parse_mode='HTML'):
 # ────────────────────────────────────────────────────────────────────────────
 # 코어 로직
 # ────────────────────────────────────────────────────────────────────────────
+# 종목코드별 전역 락 — 여러 계좌를 ThreadPoolExecutor 로 병렬 처리하다 보니
+# 서로 다른 계좌(다른 acct_no·app_key)가 "같은 종목"에 대한 예약매도 등록을
+# 정확히 같은 순간에 KIS 서버로 쏘는 경우가 실측 확인됐다(mamalong/phills2/
+# yh480825 성공 — 예약번호 68105→68106→68107로 계좌 무관 연속 발급 — 직후
+# phills75만 "7 중복된 자료가 존재합니다"로 거부, 그 시점 조회는 빈 목록).
+# 즉 계좌별 예약 존재 여부 문제가 아니라, KIS가 동일 종목코드의 예약등록
+# 요청을 동시에 여러 건 접수할 때 뒤에 도착한 요청 중 일부를 오판해 거부하는
+# 것으로 보인다. 같은 종목코드에 대한 order_reserve() 호출만큼은 프로세스
+# 내에서 직렬화(한 번에 하나씩만 KIS로 나가게)해 이 동시성 충돌을 없앤다.
+_code_locks_guard = threading.Lock()
+_code_locks: dict = {}
+
+
+def _get_code_lock(code):
+    with _code_locks_guard:
+        lock = _code_locks.get(code)
+        if lock is None:
+            lock = threading.Lock()
+            _code_locks[code] = lock
+        return lock
+
+
 def _reserve_scan_range(conn):
     """예약주문 조회 시작/종료일 — 오늘 ~ 1개월 후(직전 영업일로 보정)."""
     reserve_strt_dt = datetime.now().strftime("%Y%m%d")
@@ -317,7 +345,7 @@ def cancel_out_of_range_reserves(nick, ac, conn):
 
 
 def register_missing_reserves(nick, ac, conn):
-    """15:50 — reserve_price/qty/date 는 있는데 실제 매도 예약주문이 없는 종목 신규 등록."""
+    """15:55 — reserve_price/qty/date 는 있는데 실제 매도 예약주문이 없는 종목 신규 등록."""
     acct_no      = ac['acct_no']
     access_token = ac['access_token']
     app_key      = ac['app_key']
@@ -354,7 +382,11 @@ def register_missing_reserves(nick, ac, conn):
     for code, name, reserve_price, reserve_qty, reserve_date in rows:
         matched = df[(df['pdno'] == code) & (df['sll_buy_dvsn_cd'] == '01') & (df['cncl_ord_dt'] == "")]
         if not matched.empty:
-            continue   # 이미 등록된(미취소) 매도 예약주문 존재 → 중복 등록 방지
+            # 이미 등록된(미취소) 매도 예약주문 존재 → 중복 등록 방지. 로그를 안 남기면
+            # "성공 0건/실패 0건"만 보고 아무 일도 안 한 것처럼 오해하기 쉬워 사유를 남긴다.
+            seq = str(matched.iloc[0].get('rsvn_ord_seq', ''))
+            print(f"  ⏭ [{nick}] {name}[{code}] 이미 등록된 매도예약 존재(예약번호:{seq}) → 스킵")
+            continue
 
         ord_price  = int(reserve_price)
         ord_qty    = int(reserve_qty)
@@ -363,56 +395,76 @@ def register_missing_reserves(nick, ac, conn):
             continue
         ord_dvsn_cd = "01" if ord_price == 0 else "00"
 
-        # 등록 직전 해당 종목만 재조회 — 루프 시작 시점에 딱 한 번 뜬 스냅샷(df)이
-        # 이 시점엔 오래됐을 수 있다(스크립트 이중 실행·트리거 중복 등으로 그 사이
-        # 이미 등록됐는데 df엔 아직 안 잡힌 경우). 그대로 등록을 시도하면 KIS가
-        # "중복된 자료가 존재합니다"(오류코드 7)로 거부한다(실측: mamalong 하이브[352820]).
-        try:
-            recheck_output = order_reserve_complete(
-                access_token, app_key, app_secret,
-                reserve_strt_dt, reserve_end_dt, str(acct_no), code
-            )
-        except Exception as e:
-            print(f"  ⚠️ [{nick}] {name}[{code}] 등록 직전 재조회 오류(그대로 진행): {e}")
-            recheck_output = None
-        if recheck_output:
-            recheck_df = pd.DataFrame(recheck_output)
-            recheck_matched = recheck_df[
-                (recheck_df['pdno'] == code) &
-                (recheck_df['sll_buy_dvsn_cd'] == '01') &
-                (recheck_df['cncl_ord_dt'] == "")
-            ]
-            if not recheck_matched.empty:
-                print(f"  ⏭ [{nick}] {name}[{code}] 등록 직전 재조회에서 이미 예약 존재 확인 → 스킵")
+        # 같은 종목코드에 대한 재조회~등록 전체를 프로세스 내 종목별 락으로
+        # 직렬화한다 — 서로 다른 계좌(다른 acct_no·app_key) 스레드가 같은
+        # 종목을 동시에 등록 시도하면 KIS가 뒤에 도착한 요청 일부를 "중복"으로
+        # 오판 거부하는 것이 실측 확인됐다(모듈 상단 _code_locks 설명 참고).
+        with _get_code_lock(code):
+            # 락 안에서 다시 한 번 재조회 — 이 락을 기다리는 동안 바로 앞
+            # 스레드가 같은 종목에 대해 이미 등록을 마쳤을 수 있다.
+            try:
+                recheck_output = order_reserve_complete(
+                    access_token, app_key, app_secret,
+                    reserve_strt_dt, reserve_end_dt, str(acct_no), code
+                )
+            except Exception as e:
+                print(f"  ⚠️ [{nick}] {name}[{code}] 등록 직전 재조회 오류(그대로 진행): {e}")
+                recheck_output = None
+            if recheck_output:
+                recheck_df = pd.DataFrame(recheck_output)
+                recheck_matched = recheck_df[
+                    (recheck_df['pdno'] == code) &
+                    (recheck_df['sll_buy_dvsn_cd'] == '01') &
+                    (recheck_df['cncl_ord_dt'] == "")
+                ]
+                if not recheck_matched.empty:
+                    print(f"  ⏭ [{nick}] {name}[{code}] 등록 직전 재조회에서 이미 예약 존재 확인 → 스킵")
+                    continue
+
+            try:
+                rsv_result = order_reserve(
+                    access_token, app_key, app_secret, str(acct_no), code,
+                    str(ord_qty), str(ord_price), "01", ord_dvsn_cd, ord_end_dt
+                )
+            except Exception as e:
+                fail_cnt += 1
+                # "7 중복된 자료가 존재합니다" 오류는 실측(mamalong·phills2 하이브[352820])
+                # 결과 실제로는 예약이 등록되지 않은 채로도 발생함이 확인됐다 — 그래서
+                # "이미 등록됨"으로 간주해 조용히 넘기면 안 된다(진짜 등록 실패를 숨겨
+                # 매도 보호가 안 걸린 채로 방치될 수 있다). 실패 처리는 그대로 유지하되
+                # 그 시점의 실제 예약 현황을 함께 남겨 재발 시 근거로 진단할 수 있게 한다.
+                diag = ""
+                try:
+                    diag_output = order_reserve_complete(
+                        access_token, app_key, app_secret,
+                        reserve_strt_dt, reserve_end_dt, str(acct_no), code
+                    )
+                    diag = f" | 오류 시점 예약현황({code}): {diag_output}"
+                except Exception as diag_e:
+                    diag = f" | 오류 시점 예약현황 조회도 실패: {diag_e}"
+                print(f"  ❌ [{nick}] {name}[{code}] 예약매도등록 오류: {e}{diag}")
+                send_telegram(token, chat_id, f"❌ [{nick}] {name}[<code>{code}</code>] 예약매도등록 오류\n{e}{diag}")
+                time.sleep(0.3)
                 continue
 
-        try:
-            rsv_result = order_reserve(
-                access_token, app_key, app_secret, str(acct_no), code,
-                str(ord_qty), str(ord_price), "01", ord_dvsn_cd, ord_end_dt
-            )
-        except Exception as e:
-            fail_cnt += 1
-            print(f"  ❌ [{nick}] {name}[{code}] 예약매도등록 오류: {e}")
-            send_telegram(token, chat_id, f"❌ [{nick}] {name}[<code>{code}</code>] 예약매도등록 오류\n{e}")
-            time.sleep(0.3)
-            continue
-
-        if rsv_result and rsv_result.get('RSVN_ORD_SEQ', ''):
-            reg_cnt += 1
-            print(f"  ✅ [{nick}] {name}[{code}] 예약매도등록 {ord_qty:,}주 @ "
-                  f"{ord_price:,}원 종료일:{ord_end_dt} 예약번호:{rsv_result['RSVN_ORD_SEQ']}")
-            telegram_text = (
-                f"✅ [{nick}] {name}[<code>{code}</code>] 예약매도등록\n"
-                f"{ord_qty:,}주 * {ord_price:,}원, 종료일:{ord_end_dt}\n"
-                f"예약번호:{rsv_result['RSVN_ORD_SEQ']}"
-            )
-            send_telegram(token, chat_id, telegram_text)
-        else:
-            fail_cnt += 1
-            print(f"  ❌ [{nick}] {name}[{code}] 예약매도등록 실패: {rsv_result}")
-            send_telegram(token, chat_id, f"❌ [{nick}] {name}[<code>{code}</code>] 예약매도등록 실패")
-        time.sleep(0.3)
+            if rsv_result and rsv_result.get('RSVN_ORD_SEQ', ''):
+                reg_cnt += 1
+                print(f"  ✅ [{nick}] {name}[{code}] 예약매도등록 {ord_qty:,}주 @ "
+                      f"{ord_price:,}원 종료일:{ord_end_dt} 예약번호:{rsv_result['RSVN_ORD_SEQ']}")
+                telegram_text = (
+                    f"✅ [{nick}] {name}[<code>{code}</code>] 예약매도등록\n"
+                    f"{ord_qty:,}주 * {ord_price:,}원, 종료일:{ord_end_dt}\n"
+                    f"예약번호:{rsv_result['RSVN_ORD_SEQ']}"
+                )
+                send_telegram(token, chat_id, telegram_text)
+            else:
+                fail_cnt += 1
+                print(f"  ❌ [{nick}] {name}[{code}] 예약매도등록 실패: {rsv_result}")
+                send_telegram(token, chat_id, f"❌ [{nick}] {name}[<code>{code}</code>] 예약매도등록 실패")
+            # 락을 쥔 채로 짧게 대기 — KIS 서버가 방금 등록한 예약을 완전히
+            # 반영할 시간을 준 뒤에야 같은 종목을 노리는 다음 스레드가 락을
+            # 넘겨받아 조회/등록을 시작하게 한다.
+            time.sleep(0.5)
 
     print(f"[{nick}] 예약매도 신규등록: 성공 {reg_cnt}건 / 실패 {fail_cnt}건")
     if reg_cnt or fail_cnt:
@@ -439,9 +491,9 @@ def process_account(nick, mode):
 
 
 if __name__ == "__main__":
-    # 실행 시각(HHMM) 기준으로 동작 모드 결정 — 06~10시대→0720(가격이탈 취소), 그 외→1550(누락 등록)
+    # 실행 시각(HHMM) 기준으로 동작 모드 결정 — 06~10시대→0720(가격이탈 취소), 그 외→1555(누락 등록)
     _now_hhmm = datetime.now().strftime("%H%M")
-    mode = "0720" if "0600" <= _now_hhmm < "1100" else "1550"
+    mode = "0720" if "0600" <= _now_hhmm < "1100" else "1555"
 
     # 영업일 확인용 임시 연결 (스레드 진입 전 단일 사용)
     _conn_check = db.connect(conn_string)
