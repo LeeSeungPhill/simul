@@ -8,6 +8,7 @@ import subprocess
 import requests
 import json
 import re
+import time
 import queue
 import threading as _threading
 import pandas as pd
@@ -1451,18 +1452,33 @@ def _fetch_investor(ac, code):
     except Exception:
         return []
 
-def _fetch_cur_price_out(ac, code):
-    try:
-        r = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers=_kis_headers(ac, "FHKST01010100"),
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
-            verify=False, timeout=10
-        )
-        d = r.json()
-        return d['output'] if d.get('rt_cd') == '0' and d.get('output') else None
-    except Exception:
-        return None
+def _fetch_cur_price_out(ac, code, _max_retry=2):
+    """KIS 현재가(FHKST01010100) 조회. invest_mng_list() 등에서 여러 종목을
+    ThreadPoolExecutor 로 동시 호출할 때 KIS 레이트리밋(EGW00201: 초당 거래건수
+    초과)에 걸려 무작위로 일부 종목만 조용히 실패(현재가 빈칸)하는 것이 실측
+    확인됐다 — 원래는 rt_cd!=0 이면 원인 로그 없이 그냥 None 반환이라 왜
+    빠졌는지 알 수 없었다. 레이트리밋 응답이면 짧게 대기 후 재시도한다."""
+    for attempt in range(_max_retry + 1):
+        try:
+            r = requests.get(
+                f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers=_kis_headers(ac, "FHKST01010100"),
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+                verify=False, timeout=10
+            )
+            d = r.json()
+            if d.get('rt_cd') == '0' and d.get('output'):
+                return d['output']
+            if d.get('msg_cd') == 'EGW00201' and attempt < _max_retry:
+                time.sleep(0.3 * (attempt + 1))
+                continue
+            return None
+        except Exception:
+            if attempt < _max_retry:
+                time.sleep(0.3 * (attempt + 1))
+                continue
+            return None
+    return None
 
 def _adx(highs, lows, closes, period=14):
     """Wilder's ADX. 입력은 오름차순(과거→최신). (adx, +DI, -DI) 반환."""
