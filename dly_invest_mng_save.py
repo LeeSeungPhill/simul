@@ -159,7 +159,7 @@ UPSERT_SQL = """
         proc_yn       = EXCLUDED.proc_yn,
         mod_dt        = EXCLUDED.mod_dt,
         down_range    = EXCLUDED.down_range,
-        up_range      = EXCLUDED.up_range,
+        up_range      = EXCLUDED.up_range
 """
 
 # dly_invest_mng 생성 후 원본 invest_mng 도 동일 현재가/상승잔존율로 갱신
