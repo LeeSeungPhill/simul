@@ -1800,7 +1800,7 @@ def api_stock_search():
         conn = get_conn()
         cur  = conn.cursor()
         cur.execute("""
-            SELECT code, name, current_price, day_rate, volumn, crt_dt, signal_price, signal_time
+            SELECT code, name, current_price, day_rate, volumn, mod_dt, signal_price, signal_time
             FROM public.stock_search_form
             WHERE search_day = %s
             ORDER BY mod_dt DESC
@@ -1818,7 +1818,7 @@ def api_stock_search():
             'current_price': r[2],
             'day_rate':      float(r[3]) if r[3] is not None else None,
             'volumn':        int(r[4]) if r[4] is not None else None,
-            'crt_dt':        r[5].strftime('%Y-%m-%d %H:%M:%S') if r[5] else None,
+            'mod_dt':        r[5].strftime('%Y-%m-%d %H:%M:%S') if r[5] else None,
             'signal_price':  r[6],
             'signal_time':   (r[7] or '').strip() if r[7] else None,
         }
