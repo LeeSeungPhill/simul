@@ -1803,7 +1803,7 @@ def api_stock_search():
             SELECT code, name, current_price, day_rate, volumn, crt_dt, signal_price, signal_time
             FROM public.stock_search_form
             WHERE search_day = %s
-            ORDER BY crt_dt DESC
+            ORDER BY mod_dt DESC
         """, (date,))
         rows = cur.fetchall()
         cur.close()

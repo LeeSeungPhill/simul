@@ -1994,7 +1994,7 @@ createApp({
           { headerName: '현재가',   field: 'current_price', width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
           { headerName: '등락율',   field: 'day_rate',      width: 90,  type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '거래량',   field: 'volumn',        width: 120, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
-          { headerName: '생성일시', field: 'crt_dt',        width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
+          { headerName: '최신일시', field: 'mod_dt',        width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
           { headerName: '신호가',   field: 'signal_price',  width: 110, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
           { headerName: '신호일시', field: 'signal_time',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
         ],
