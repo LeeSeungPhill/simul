@@ -1058,7 +1058,9 @@ def invest_mng_list():
             'price': price,
             'sales_amt': sales_amt, 'ep_sales_amt': ep_sales_amt, 'report_dt': report_dt,
             'invest_issue': invest_issue, 'invest_point': invest_point, 'invest_risk': invest_risk,
-            'remain_rate': remain_rate, 'dividend_rate': dividend_rate, 'sales_rate': sales_rate,
+            # numeric(Decimal) 컬럼은 jsonify가 문자열로 직렬화 → AG Grid가 사전식으로
+            # 정렬해 "100"이 "99"보다 앞에 오는 문제가 생긴다. float 로 변환해 숫자로 내려준다.
+            'remain_rate': remain_rate, 'dividend_rate': _num_or_none(dividend_rate), 'sales_rate': _num_or_none(sales_rate),
             'value_check': value_check, 'dividend_check': dividend_check, 'growth_check': growth_check,
             'check_dt': check_dt, 'proc_yn': proc_yn, 'down_range': down_range, 'up_range': up_range,
         }
