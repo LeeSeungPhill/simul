@@ -588,6 +588,8 @@
     <div class="dash-header">
       <span class="dash-title">🔍 종목검색 <span style="font-weight:400;color:#888;font-size:.8rem">(총 {{ stockSearchTotalCount }}건)</span></span>
       <span style="display:flex;align-items:center;gap:8px">
+        <input type="text" v-model="stockSearchFilterText" @input="onStockSearchFilter" placeholder="종목명 검색"
+               style="padding:5px 8px;border:1.5px solid #e0e0e0;border-radius:6px;font-size:.82rem;width:120px" />
         <input type="date" v-model="stockSearchDate" style="padding:5px 8px;border:1.5px solid #e0e0e0;border-radius:6px;font-size:.82rem" />
         <span v-if="stockSearchLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
         <button class="dash-btn-refresh" @click="loadStockSearchList" :disabled="stockSearchLoading">새로고침</button>
@@ -601,6 +603,8 @@
     <div class="dash-header">
       <span class="dash-title">📋 투자관리 현황 <span style="font-weight:400;color:#888;font-size:.8rem">(총 {{ investMngTotalCount }}건)</span></span>
       <span style="display:flex;align-items:center;gap:8px">
+        <input type="text" v-model="investMngFilterText" @input="onInvestMngFilter" placeholder="종목명 검색"
+               style="padding:5px 8px;border:1.5px solid #e0e0e0;border-radius:6px;font-size:.82rem;width:120px" />
         <span v-if="investMngListLoading" style="font-size:.78rem;color:#aaa">불러오는 중...</span>
         <button class="dash-btn-refresh" @click="loadInvestMngList" :disabled="investMngListLoading">새로고침</button>
       </span>
@@ -1852,13 +1856,21 @@ createApp({
     // ── 투자관리 현황 (AgGrid) ──
     const investMngGridEl      = ref(null);
     const investMngListLoading = ref(false);
+    const investMngFilterText  = ref('');
     let investMngGridApi       = null;
+    function onInvestMngFilter() {
+      if (investMngGridApi) investMngGridApi.setQuickFilter(investMngFilterText.value);
+    }
 
     // ── 종목검색 (AgGrid) ──
     const stockSearchGridEl    = ref(null);
     const stockSearchLoading   = ref(false);
     const stockSearchDate      = ref(today);
     const stockSearchTotalCount = ref(0);
+    const stockSearchFilterText = ref('');
+    function onStockSearchFilter() {
+      if (stockSearchGridApi) stockSearchGridApi.setQuickFilter(stockSearchFilterText.value);
+    }
     let stockSearchGridApi     = null;
 
     const form = ref({
@@ -2841,7 +2853,9 @@ createApp({
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
       investMngGridEl, investMngListLoading, loadInvestMngList, investMngTotalCount,
+      investMngFilterText, onInvestMngFilter,
       stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList, stockSearchTotalCount,
+      stockSearchFilterText, onStockSearchFilter,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
