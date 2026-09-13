@@ -515,7 +515,7 @@ def load_fund_signals(conn, acct_no):
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
-    """trading_plan == 'h' 대상"""
+    """trading_plan == 'h' OR trading_plan IS NULL 대상"""
     cur = conn.cursor()
     cur.execute("""
         SELECT 
@@ -528,7 +528,7 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
         FROM "stockBalance_stock_balance" A 
         WHERE acct_no = %s 
         AND proc_yn = 'Y'
-        AND trading_plan = 'h'
+        AND (trading_plan = 'h' OR trading_plan IS NULL)
         AND COALESCE(eval_sum, 0) > 0
     """, (str(acct_no),))
     rows = cur.fetchall()
@@ -814,14 +814,16 @@ def process_account(nick):
         token        = ac['bot_token2']
         chat_id      = ac['chat_id']
 
+        # 트레이딩 현금, 시장비율, 트레이딩 평가금액
         trading_cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
+        # 잔고정보의 trading_plan == 'h' OR trading_plan IS NULL 대상 전일저가 이탈 종목
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         transfer_cash_need = total_excess(trading_cash, total_eval, mr)
         filtered_tot_evlu = trading_cash + total_eval
         current_ratio_v = 100 - (trading_cash / filtered_tot_evlu * 100)
         if not holdings:
-            print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 없음 → 스킵")
-            telegram_text = (f"✅ [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 대상 없음")
+            print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%({int(filtered_tot_evlu * int(mr) / 100):,}원), 현재비율: {current_ratio_v:.1f}%({total_eval:,}원) → 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 대상 없음 → 스킵")
+            telegram_text = (f"✅ [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 현금: {trading_cash:,}원\n" f"시장비율: {int(mr):,}%({int(filtered_tot_evlu * int(mr) / 100):,}원), 현재비율: {current_ratio_v:.1f}%({total_eval:,}원)\n" f" → 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 대상 없음")
             send_telegram(token, chat_id, telegram_text)
             return
 
@@ -829,7 +831,7 @@ def process_account(nick):
         strength_fn = _make_strength_fn(ac, cache)
 
         orders = build_rebalance_orders(holdings, transfer_cash_need, strength_fn)
-        print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 매도대상: {len(orders)}건")
+        print(f"[{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%({int(filtered_tot_evlu * int(mr) / 100):,}원), 현재비율: {current_ratio_v:.1f}%({total_eval:,}원) → 트레이딩 현금전환: {transfer_cash_need:,}원 매도대상: {len(orders)}건")
 
         if len(orders) > 0:
             sold_cnt, fail_cnt, sold_amt = 0, 0, 0
@@ -879,7 +881,7 @@ def process_account(nick):
                 summary_text = (f"📊 [{nick}] 성공 {sold_cnt}건 / 실패 {fail_cnt}건, 트레이딩 현금전환: {transfer_cash_need:,}원, 총 매도금액: {sold_amt:,}원")
                 send_telegram(token, chat_id, summary_text)
         else:
-            summary_text = (f"📊 [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 트레이딩 잔고: {total_eval:,}원, 트레이딩 현금: {trading_cash:,}원, 시장비율: {int(mr):,}%, 현재비율: {current_ratio_v:.1f}%, 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 홀딩 매도 대상 미존재")
+            summary_text = (f"📊 [{nick}] 총 트레이딩 평가: {filtered_tot_evlu:,}원, 현금: {trading_cash:,}원\n" f"시장비율: {int(mr):,}%({int(filtered_tot_evlu * int(mr) / 100):,}원), 현재비율: {current_ratio_v:.1f}%({total_eval:,}원)\n" f" → 트레이딩 현금전환: {transfer_cash_need:,}원 전일저가 이탈 매도 대상 미존재")
             send_telegram(token, chat_id, summary_text)        
     except Exception as e:
         print(f"[{nick}] 계좌 처리 오류: {e}")

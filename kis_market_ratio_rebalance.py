@@ -517,7 +517,7 @@ def load_fund_signals(conn, acct_no):
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
-    """trading_plan == 'h', trail_tp = 'L' 대상"""
+    """trading_plan == 'h' 대상"""
     cur = conn.cursor()
     cur.execute("""
         SELECT 
@@ -729,6 +729,7 @@ def run(nick, horizon="D", dry_run=False, force=False):
         def quality_fn(code):
             return quality_score_from_history(conn, code)
 
+        # 리밸런싱 주문 대상 우선순위별 초과된 감축물량 설정
         orders, excess = build_rebalance_orders(holdings, cash, mr, strength_fn, quality_fn)
 
         print(f"[{nick}] 리밸런싱 cash={cash:,} market_ratio={mr} "
@@ -745,13 +746,14 @@ def run(nick, horizon="D", dry_run=False, force=False):
             #     print(f"  [DRY] 매도 {tag}")
             #     continue
             print(f"  [DRY] 매도 {tag}")
-            
+            # 매도 주문 실행
             ar = order_cash(False, ac["access_token"], ac["app_key"], ac["app_secret"],
                             str(acct_no), h["code"], "01", qty, 0, excg_id="KRX")
             if ar.isOK():
                 out = ar.getBody().output
                 order_no = (out or {}).get("ODNO", "")
                 print(f"  ✅ 매도접수 {tag} ODNO={order_no}")
+                # 매매추적정보 생성
                 record_sell(conn, acct_no, h, qty, h["current_price"], order_no, horizon)
             else:
                 print(f"  ❌ 매도실패 {tag}: {ar.getErrorCode()} {ar.getErrorMessage()}")
