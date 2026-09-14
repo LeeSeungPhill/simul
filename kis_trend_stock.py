@@ -313,7 +313,7 @@ if __name__ == "__main__":
     if _is_business:
 
         # nickname_list = ['phills2', 'phills75', 'yh480825', 'mamalong', 'phills13', 'phills15', 'worry106', 'chichipa', 'honeylong']
-        nickname_list = ['honeylong']
+        nickname_list = ['worry106', 'chichipa', 'honeylong']
 
         # 7개 계좌 병렬 처리
         with ThreadPoolExecutor(max_workers=len(nickname_list)) as account_executor:
