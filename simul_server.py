@@ -90,6 +90,13 @@ def get_conn():
     return db.connect(CONN_STRING)
 
 
+def _is_valid_stock_code(code: str) -> bool:
+    """종목코드 형식 검증. 신주인수권증서 등 특수종목은 코드에 영문자가 섞인다
+    (예: '0015N0' — KIS API·KRX 목록에 실존). code.isdigit() 로 순수 숫자만
+    허용하면 이런 종목이 전부 400 오류로 거부되므로 6자리 영숫자까지 허용한다."""
+    return bool(re.match(r'^[0-9A-Za-z]{6}$', code))
+
+
 @app.route('/')
 def index():
     return send_from_directory(os.path.join(app.root_path, 'templates'), 'simul.html')
@@ -764,7 +771,7 @@ def stock_info():
     """KIS API로 종목 기본정보(시장구분·업종·시가총액·매수금액 제안) 조회."""
     code     = request.args.get('code', '').strip().zfill(6)
     buy_date = request.args.get('buy_date', '').strip().replace('-', '')  # YYYYMMDD
-    if not code or not code.isdigit():
+    if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
     try:
         try:
@@ -1081,7 +1088,7 @@ def invest_mng_list():
 def invest_mng_info():
     """종목코드로 투자관리(invest_mng) 기존 저장값 + 시장정보 + invest_point 분석결과 조회."""
     code = request.args.get('code', '').strip().zfill(6)
-    if not code or not code.isdigit():
+    if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
 
     conn = get_conn()
@@ -1137,7 +1144,7 @@ def invest_mng_apply():
     data = request.get_json(force=True, silent=True) or {}
     code = str(data.get('code', '')).strip().zfill(6)
     name = str(data.get('name', '')).strip()
-    if not code or not code.isdigit() or not name:
+    if not code or not _is_valid_stock_code(code) or not name:
         return jsonify({'error': '종목코드/종목명이 필요합니다.'}), 400
 
     main_business = (data.get('main_business') or '').strip() or None
@@ -1716,7 +1723,7 @@ def _calc_supply_score(ohlcv_rows, inv_rows, price_out, ssts_rows=None):
 def stock_trend():
     """종목 현재 추세(Uptrend/Downtrend/Sideways) + 추세 시작일 (지그재그 고점/저점 기준)."""
     code = request.args.get('code', '').strip().zfill(6)
-    if not code or not code.isdigit():
+    if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
     ac = _get_api_account()
     if not ac:
@@ -1740,7 +1747,7 @@ def stock_trend():
 def stock_scores():
     """종목 수급점수(외국인·기관·공매도·대차잔고·OBV) + 차트점수(추세·ADX·이격도·거래량·전일대비거래량) 계산."""
     code = request.args.get('code', '').strip().zfill(6)
-    if not code or not code.isdigit():
+    if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
     ac = _get_api_account()
     if not ac:
@@ -3452,7 +3459,7 @@ def dart_company_info():
     """DART Open API 기반 기업정보(기본정보·실적·주주·경영진) + Naver 뉴스 조회."""
     code       = request.args.get('code', '').strip().zfill(6)
     stock_name = request.args.get('name', '').strip()
-    if not code or not code.isdigit():
+    if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드 필요'}), 400
 
     # stock_code(6) → corp_code(8) 변환 (corpCode.xml 불일치 시 종목명으로 fallback)
