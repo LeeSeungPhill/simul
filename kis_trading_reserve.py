@@ -40,7 +40,6 @@ import threading
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import psycopg2 as db
@@ -111,7 +110,10 @@ def inquire_price(access_token, app_key, app_secret, code):
     res = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                        headers=_headers(access_token, app_key, app_secret, "FHKST01010100"),
                        params=params, verify=False, timeout=10)
-    return resp.APIResp(res).getBody().output
+    ar = resp.APIResp(res)
+    if not ar.isOK():
+        raise RuntimeError(f"{ar.getErrorCode()} {ar.getErrorMessage()}")
+    return ar.getBody().output
 
 
 # 주식예약주문 : 15시 40분 ~ 다음 영업일 07시 30분까지 가능(23시 40분 ~ 0시 10분 서버초기화 제외)
@@ -300,7 +302,7 @@ def cancel_out_of_range_reserves(nick, ac, conn):
                 time.sleep(0.25)
                 price_cache[code] = inquire_price(access_token, app_key, app_secret, code)
             except Exception as e:
-                print(f"[{nick}] {name}[{code}] 현재가 조회 오류: {e}")
+                print(f"  ❌ [{nick}] {name}[{code}] 현재가 조회 실패: {e}")
                 price_cache[code] = None
         price_out = price_cache[code]
         if not price_out:
@@ -471,7 +473,7 @@ def register_missing_reserves(nick, ac, conn):
 
 
 def process_account(nick, mode):
-    """계좌별 독립 DB 연결로 병렬 처리."""
+    """계좌별 독립 DB 연결로 순차 처리."""
     conn = db.connect(conn_string)
     token = chat_id = None   # account() 실패 시에도 except 블록에서 안전하게 참조되도록 선-초기화
     try:
@@ -505,15 +507,11 @@ if __name__ == "__main__":
 
         nickname_list = ['phills2', 'phills75', 'yh480825', 'mamalong', 'phills13', 'phills15', 'chichipa', 'honeylong', 'worry106']
 
-        # 7개 계좌 병렬 처리
-        with ThreadPoolExecutor(max_workers=len(nickname_list)) as account_executor:
-            account_futures = {
-                account_executor.submit(process_account, nick, mode): nick
-                for nick in nickname_list
-            }
-            for future in as_completed(account_futures):
-                nick = account_futures[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"[{nick}] 계좌 최종 오류: {e}")
+        # 계좌 순차 처리 — 여러 계좌가 동일 종목코드에 동시 등록 요청을 보낼 때
+        # KIS 서버가 일부를 "중복된 자료가 존재합니다"로 오판 거부하는 현상을
+        # 원천 차단하기 위해 병렬 처리 대신 계좌를 한 번에 하나씩 처리한다.
+        for nick in nickname_list:
+            try:
+                process_account(nick, mode)
+            except Exception as e:
+                print(f"[{nick}] 계좌 최종 오류: {e}")
