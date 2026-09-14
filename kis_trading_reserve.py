@@ -104,10 +104,9 @@ def _headers(access_token, app_key, app_secret, tr_id):
 
 
 def inquire_price(access_token, app_key, app_secret, code):
-    """FHKST01010100 현재가 시세. 당일 상한가(stck_mxpr)/하한가(stck_llam) 포함.
-    동시호가/장운영시간(09:00~15:30)에는 J(KRX), 그 외에는 NX 기준."""
+    """FHKST01010100 현재가 시세 """
     t = datetime.now().strftime("%H%M")
-    params = {"FID_COND_MRKT_DIV_CODE": "J" if "0900" <= t < "1530" else "NX",
+    params = {"FID_COND_MRKT_DIV_CODE": "J",
               "FID_INPUT_ISCD": code}
     res = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                        headers=_headers(access_token, app_key, app_secret, "FHKST01010100"),
