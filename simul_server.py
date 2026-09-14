@@ -58,7 +58,10 @@ def _load_krx() -> pd.DataFrame | None:
         df['code'] = df['code'].apply(
             lambda c: str(c).strip().lstrip('A').zfill(6)[-6:]
         )
-        df = df[df['code'].str.isdigit()].reset_index(drop=True)
+        # 신주인수권증서·특수종목 등은 코드에 영문자가 섞인다(예: '0015N0').
+        # isdigit() 만 허용하면 이런 종목이 목록에서 통째로 빠져 조회가 안 되므로
+        # "6자리 영숫자"까지만 허용해 형식이 명백히 깨진 행만 걸러낸다.
+        df = df[df['code'].str.match(r'^[0-9A-Za-z]{6}$')].reset_index(drop=True)
         with _krx_df_lock:
             _krx_df = df
         return df

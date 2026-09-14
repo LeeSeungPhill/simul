@@ -2223,7 +2223,7 @@ createApp({
       if (!val) return;
       sellLookingUp.value = true;
       try {
-        const code = /^\d+$/.test(val) ? val.padStart(6, '0') : null;
+        const code = /^(?=.*\d)[0-9A-Za-z]{1,6}$/.test(val) ? val.padStart(6, '0') : null;
         if (code) {
           sellForm.value.code = code;
           const res  = await fetch(`/api/stock-name?code=${code}`);
@@ -2366,7 +2366,7 @@ createApp({
       if (!val) return;
       nameLookingUp.value = true;
       try {
-        if (/^\d+$/.test(val)) {
+        if (/^(?=.*\d)[0-9A-Za-z]{1,6}$/.test(val)) {
           const code = val.padStart(6, '0');
           form.value.code = code;
           const res  = await fetch(`/api/stock-name?code=${code}`);
@@ -2475,7 +2475,7 @@ createApp({
       investMngLookingUp.value = true;
       investMngPointError.value = '';
       try {
-        if (/^\d+$/.test(val)) {
+        if (/^(?=.*\d)[0-9A-Za-z]{1,6}$/.test(val)) {
           const code = val.padStart(6, '0');
           investMng.value.code = code;
           const res  = await fetch(`/api/stock-name?code=${code}`);
@@ -2533,7 +2533,7 @@ createApp({
       if (!val) { trailEdit.value.name = ''; return; }
       trailEditLookingUp.value = true;
       try {
-        if (/^\d+$/.test(val)) {
+        if (/^(?=.*\d)[0-9A-Za-z]{1,6}$/.test(val)) {
           const code = val.padStart(6, '0');
           trailEdit.value.code = code;
           const res  = await fetch(`/api/stock-name?code=${code}`);
