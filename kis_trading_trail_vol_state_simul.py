@@ -108,11 +108,6 @@ def is_business_day(check_date, conn) -> bool:
 # ─────────────────────────────────────────
 # KIS API : 일봉·분봉
 # ─────────────────────────────────────────
-def get_excg_id():
-    t = datetime.now().strftime('%H%M')
-    return "KRX" if '0900' <= t < '1530' else "NXT"
-
-
 _ITEM_CHART_URL = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 
 
