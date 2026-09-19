@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 import psycopg2 as db
 from datetime import datetime, timedelta
 import os
@@ -1717,6 +1717,109 @@ def _calc_supply_score(ohlcv_rows, inv_rows, price_out, ssts_rows=None):
             'obv_chg_pct':  round(obv_chg, 2),   'obv_score':  obv_sc,
         }
     }
+
+
+# ── 종목 차트 (C:\reform\Batch\fnguidePerformbot.py 의 get_chart(code) 이식) ──────────
+# 원본 get_chart 는 텔레그램 봇 핸들러 안의 중첩 함수(company/stock 등 바깥 변수에 의존)이고
+# 결과를 고정 경로(/home/terra/chart/save2.png)에 저장한 뒤 봇이 그 파일을 전송하는 구조라
+# 웹서버에서 import·재사용할 수 없다. 같은 차트(500일 일봉 캔들 + 거래량 막대, 상승=빨강/하락=파랑)를
+# 만드는 로직을 그대로 옮기되, 고정 파일 대신 메모리(PNG bytes)로 응답한다. 서버는 요청을 스레드로
+# 동시 처리하므로 전역 상태를 쓰는 pyplot 대신 Figure/FigureCanvasAgg 객체 API 를 쓴다.
+_CHART_LOOKBACK_DAYS = 500
+_CHART_CACHE_TTL     = 300                 # 같은 종목 재클릭 시 pykrx(KRX 스크래핑) 재조회 방지(초)
+_chart_cache: dict   = {}                  # code → (만료시각, png bytes)
+_chart_cache_lock    = _threading.Lock()
+_KOREAN_FONT_CANDIDATES = (
+    r'C:\Windows\Fonts\NanumGothic.ttf',   # 원본 봇과 같은 폰트
+    r'C:\Windows\Fonts\malgun.ttf',
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+)
+
+
+def _render_stock_chart_png(code: str) -> bytes:
+    """500일 일봉 캔들(상단) + 거래량 막대(하단) 차트를 PNG bytes 로 생성.
+    조회 결과가 없으면 ValueError."""
+    # 무거운 의존성은 요청 시점에만 로드(서버 기동에 영향 없도록 지연 import)
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib import font_manager as fm, gridspec, ticker as mticker
+    from mplfinance.original_flavor import candlestick2_ohlc
+    from pykrx import stock
+
+    end   = datetime.now()
+    start = end - timedelta(days=_CHART_LOOKBACK_DAYS)
+    df = stock.get_market_ohlcv_by_date(start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), code)
+    if df is None or df.empty:
+        raise ValueError(f'차트 데이터가 없습니다({code})')
+    df = df[['시가', '고가', '저가', '종가', '거래량']]
+
+    # 제목: 회사명[코드] — 한글 폰트가 없으면 글자가 네모로 깨지므로 코드만 표시
+    font_path = next((p for p in _KOREAN_FONT_CANDIDATES if os.path.exists(p)), None)
+    title = code
+    if font_path:
+        krx = _load_krx()
+        if krx is not None:
+            hit = krx[krx['code'] == code]
+            if not hit.empty:
+                title = f"{hit.iloc[0]['company'].strip()}[{code}]"
+    title_kwargs = {'fontproperties': fm.FontProperties(fname=font_path)} if font_path else {}
+
+    fig = Figure(figsize=(10, 7), facecolor='white')
+    FigureCanvasAgg(fig)
+    gs = gridspec.GridSpec(2, 1, height_ratios=(3.5, 1.5), figure=fig)
+
+    # 캔들 차트
+    ax_top = fig.add_subplot(gs[0, :])
+    candlestick2_ohlc(ax_top, df['시가'], df['고가'], df['저가'], df['종가'],
+                      width=0.8, colorup='r', colordown='b')
+    ax_top.set_xticks(range(len(df))[::5])
+    ax_top.set_xticklabels([x.strftime('%m-%d') for x in df.index[::5]], fontsize=8)
+    ax_top.tick_params(axis='x', rotation=90)
+    ax_top.set_title(title, fontsize=15, **title_kwargs)
+    ax_top.grid()
+
+    # 거래량 막대(전일 대비 증가=빨강/감소=파랑)
+    color_list = ['r' if d >= 0 else 'b' for d in df['거래량'].diff().fillna(0)]
+    ax_bottom = fig.add_subplot(gs[1, :])
+    ax_bottom.bar(range(len(df)), df['거래량'], color=color_list)
+    ax_bottom.yaxis.set_major_locator(mticker.FixedLocator(ax_bottom.get_yticks()))
+    ax_bottom.set_yticklabels(['{:.0f}'.format(v) for v in ax_bottom.get_yticks()])
+    ax_bottom.set_xticks(range(len(df))[::5])
+    ax_bottom.set_xticklabels([x.strftime('%Y-%m-%d') for x in df.index[::5]], fontsize=8)
+    ax_bottom.tick_params(axis='x', rotation=90)
+    ax_bottom.grid()
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100)
+    return buf.getvalue()
+
+
+@app.route('/api/stock-chart')
+def stock_chart():
+    """종목 차트 PNG (팝업 표시용). 오류는 JSON({error}) 로 응답해 화면에서 메시지를 보여준다."""
+    code = request.args.get('code', '').strip().zfill(6)
+    if not code or not _is_valid_stock_code(code):
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+
+    now = time.time()
+    with _chart_cache_lock:
+        hit = _chart_cache.get(code)
+        if hit and hit[0] > now:
+            return Response(hit[1], mimetype='image/png')
+
+    try:
+        png = _render_stock_chart_png(code)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': f'차트 생성 오류: {e}'}), 500
+
+    with _chart_cache_lock:
+        _chart_cache[code] = (now + _CHART_CACHE_TTL, png)
+    return Response(png, mimetype='image/png')
 
 
 @app.route('/api/stock-trend')

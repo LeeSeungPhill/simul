@@ -489,6 +489,35 @@
     .trend-up   { background:#e8f9ee; color:#1e9e52; }
     .trend-down { background:#fdeaea; color:#c0392b; }
     .trend-side { background:#f0f2f5; color:#777; }
+
+    /* 종목검색 그리드: 클릭하면 차트 팝업이 뜨는 종목코드/종목명 셀 */
+    .ag-theme-alpine .ag-cell.ag-cell-link { cursor:pointer; color:#4361ee; text-decoration:underline; }
+    .ag-theme-alpine .ag-cell.ag-cell-link:hover { color:#1d3ad1; font-weight:600; }
+
+    /* 종목 차트 팝업 */
+    .chart-modal-backdrop {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(20,24,40,.55);
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    .chart-modal {
+      background: #fff; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.35);
+      width: min(1040px, 96vw); max-height: 96vh; overflow: auto;
+    }
+    .chart-modal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid #e8eaff;
+      font-size: .95rem; font-weight: 700; color: #1a1a2e;
+    }
+    .chart-modal-close {
+      flex: none; width: 30px; height: 30px; padding: 0; border-radius: 6px;
+      background: #f0f2f5; color: #555; font-size: 1rem; line-height: 1;
+    }
+    .chart-modal-body { padding: 12px 16px 16px; min-height: 120px; text-align: center; }
+    .chart-modal-body img { width: 100%; height: auto; display: block; }
+    .chart-modal-msg { padding: 40px 0; font-size: .9rem; color: #888; }
+    .chart-modal-msg.err { color: #c0392b; }
     .download-panel { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
                       background:#e8f5e9; border:1px solid #a5d6a7; border-radius:8px;
                       padding:10px 14px; margin:6px 0; }
@@ -1843,6 +1872,21 @@
     </div>
   </div>
 
+  <!-- 종목 차트 팝업 (종목검색 그리드의 종목코드/종목명 클릭) -->
+  <div class="chart-modal-backdrop" v-if="chartPopup.open" @click.self="closeStockChart">
+    <div class="chart-modal">
+      <div class="chart-modal-head">
+        <span>📈 {{ chartPopup.name ? chartPopup.name + ' ' : '' }}[{{ chartPopup.code }}] 차트</span>
+        <button class="chart-modal-close" @click="closeStockChart" title="닫기 (Esc)">✕</button>
+      </div>
+      <div class="chart-modal-body">
+        <div v-if="chartPopup.loading" class="chart-modal-msg">차트 불러오는 중... (최초 조회는 수 초 걸릴 수 있습니다)</div>
+        <div v-else-if="chartPopup.error" class="chart-modal-msg err">⚠️ {{ chartPopup.error }}</div>
+        <img v-else-if="chartPopup.imgUrl" :src="chartPopup.imgUrl" :alt="chartPopup.code + ' 차트'" />
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -1870,6 +1914,47 @@ createApp({
     const stockSearchFilterText = ref('');
     function onStockSearchFilter() {
       if (stockSearchGridApi) stockSearchGridApi.setQuickFilter(stockSearchFilterText.value);
+    }
+
+    // ── 종목 차트 팝업 (/api/stock-chart → PNG) ──
+    const chartPopup = ref({ open: false, loading: false, code: '', name: '', imgUrl: '', error: '' });
+    let chartReqSeq = 0;   // 로딩 중 다른 종목을 클릭했을 때 늦게 도착한 이전 응답을 버리기 위한 요청 번호
+
+    function _revokeChartUrl() {
+      if (chartPopup.value.imgUrl) URL.revokeObjectURL(chartPopup.value.imgUrl);
+      chartPopup.value.imgUrl = '';
+    }
+
+    async function openStockChart(code, name) {
+      if (!code) return;
+      const seq = ++chartReqSeq;
+      _revokeChartUrl();
+      chartPopup.value = { open: true, loading: true, code, name: name || '', imgUrl: '', error: '' };
+      try {
+        const res = await fetch(`/api/stock-chart?code=${encodeURIComponent(code)}`);
+        if (seq !== chartReqSeq) return;
+        if (!res.ok) {
+          // 오류는 JSON({error}) 로 내려온다 — 이미지가 아니므로 메시지로 표시
+          let msg = `차트를 불러오지 못했습니다 (${res.status})`;
+          try { msg = (await res.json()).error || msg; } catch { /* 본문이 JSON 이 아니면 기본 메시지 */ }
+          chartPopup.value.error = msg;
+        } else {
+          const blob = await res.blob();
+          if (seq !== chartReqSeq) return;
+          chartPopup.value.imgUrl = URL.createObjectURL(blob);
+        }
+      } catch (e) {
+        if (seq === chartReqSeq) chartPopup.value.error = '서버 연결 오류: ' + e.message;
+      } finally {
+        if (seq === chartReqSeq) chartPopup.value.loading = false;
+      }
+    }
+
+    function closeStockChart() {
+      chartReqSeq++;   // 진행 중인 요청 결과 무효화
+      _revokeChartUrl();
+      chartPopup.value.open = false;
+      chartPopup.value.loading = false;
     }
     let stockSearchGridApi     = null;
 
@@ -1948,14 +2033,14 @@ createApp({
         columnDefs: [
           { headerName: '종목코드', field: 'code', width: 100 },
           { headerName: '종목명',   field: 'name', width: 130 },
+          { headerName: '매출증가', field: 'sales_rate',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
+          { headerName: '상승잔존', field: 'remain_rate',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '현재가',   field: 'price',         width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
           { headerName: '목표가',   field: 'high_price',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
-          { headerName: '상승잔존', field: 'remain_rate',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
-          { headerName: '매수하단',   field: 'down_range',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
-          { headerName: '매수상단',   field: 'up_range',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
-          { headerName: '매출증가', field: 'sales_rate',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
-          { headerName: '배당',   field: 'dividend_rate', width: 90,  type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '주요사업', field: 'main_business', flex: 1, minWidth: 160 },
+          { headerName: '매수상단',   field: 'up_range',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '매수하단',   field: 'down_range',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
+          { headerName: '배당',   field: 'dividend_rate', width: 90,  type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },          
         ],
         defaultColDef: { sortable: true, resizable: true },
         rowData: [],
@@ -2001,8 +2086,11 @@ createApp({
       if (!stockSearchGridEl.value || typeof agGrid === 'undefined') return;
       const gridOptions = {
         columnDefs: [
-          { headerName: '종목코드', field: 'code', width: 100 },
-          { headerName: '종목명',   field: 'name', width: 130 },
+          // 종목코드/종목명 셀 클릭 → 해당 종목 차트 팝업
+          { headerName: '종목코드', field: 'code', width: 100, cellClass: 'ag-cell-link',
+            onCellClicked: (e) => openStockChart(e.data.code, e.data.name) },
+          { headerName: '종목명',   field: 'name', width: 130, cellClass: 'ag-cell-link',
+            onCellClicked: (e) => openStockChart(e.data.code, e.data.name) },
           { headerName: '검출시분', field: 'search_time',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
           { headerName: '최신시분', field: 'mod_dt',        width: 90, type: 'rightAligned', valueFormatter: p => _fmtHM(p.value) },
           { headerName: '현재가',   field: 'current_price', width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
@@ -2836,6 +2924,9 @@ createApp({
     watch(simDate, (d) => { if (d) loadDashboard(); });
 
     onMounted(async () => {
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && chartPopup.value.open) closeStockChart();
+      });
       await loadList();
       loadDashboard();
       initInvestMngGrid();
@@ -2856,6 +2947,7 @@ createApp({
       investMngFilterText, onInvestMngFilter,
       stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList, stockSearchTotalCount,
       stockSearchFilterText, onStockSearchFilter,
+      chartPopup, openStockChart, closeStockChart,
       stockScores, stockScoresLoading, scoreDetailOpen, fetchStockScores, scoreCls,
       stockTrend, stockTrendLoading, fetchStockTrend, trendLabel, trendCls,
       companyInfo, companyTab, fhTab, companyLoading, fetchCompanyInfo, bizExpanded,
