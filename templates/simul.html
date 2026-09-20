@@ -494,6 +494,10 @@
     .ag-theme-alpine .ag-cell.ag-cell-link { cursor:pointer; color:#4361ee; text-decoration:underline; }
     .ag-theme-alpine .ag-cell.ag-cell-link:hover { color:#1d3ad1; font-weight:600; }
 
+    /* 종목명 레이블 클릭 → 차트 팝업 */
+    .stock-name-link { cursor:pointer; text-decoration:underline; }
+    .stock-name-link:hover { color:#1d3ad1; font-weight:600; }
+
     /* 종목 차트 팝업 */
     .chart-modal-backdrop {
       position: fixed; inset: 0; z-index: 1000;
@@ -662,7 +666,7 @@
           </label>
         </div>
         <div v-if="investMng.name" style="font-size:.78rem;color:#4361ee;margin-top:4px;padding-left:2px">
-          {{ investMng.name }}
+          <span class="stock-name-link" @click="openStockChart(investMng.code, investMng.name)">{{ investMng.name }}</span>
           <span v-if="investMngLookingUp" style="color:#aaa;margin-left:6px">조회/분석 중... (신규 종목은 수 분 소요될 수 있습니다)</span>
           <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">invest_point 신규 분석 완료</span>
           <span v-if="!investMngLookingUp && investMngStale" style="color:#f4a261;margin-left:6px">⚠ {{ investMngStaleDays }}일 전 분석된 오래된 정보입니다</span>
@@ -878,7 +882,7 @@
           :class="{loading: nameLookingUp}"
         />
         <div v-if="form.name" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;padding-left:2px">
-          <span style="font-size:.78rem;color:#4361ee">{{ form.name }}</span>
+          <span class="stock-name-link" style="font-size:.78rem;color:#4361ee" @click="openStockChart(form.code, form.name)">{{ form.name }}</span>
           <span v-if="stockTrendLoading" style="font-size:.7rem;color:#aaa">추세 계산 중...</span>
           <span v-if="stockTrend && !stockTrendLoading" class="trend-badge" :class="trendCls(stockTrend.trend)">
             {{ trendLabel(stockTrend.trend) }} ({{ fmtDay(stockTrend.start_date) }}~)
