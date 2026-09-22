@@ -2508,7 +2508,9 @@ def _dart_exec_voting_map(corp_code: str) -> dict:
 
 _INVEST_POINT_SH      = os.environ.get('INVEST_POINT_SH', '/home/terra/bin/run_invest_point.sh')
 _INVEST_POINT_SSH_HOST = os.environ.get('INVEST_POINT_SSH_HOST', '')  # 원격 실행 시 Tailscale IP (비어있으면 로컬 실행)
-_INVEST_ANALYSIS_TIMEOUT = 1800  # mvp_graph.py 1건당 최대 대기(초) — LLM 체인 특성상 넉넉히
+_INVEST_ANALYSIS_TIMEOUT = 600   # mvp_graph.py 1건당 최대 대기(초) — 평균 180초 기준 3배 이상 여유(과거 1800초는 멈춘 건이 대기열을 30분씩 막아 너무 길었음)
+_INVEST_ANALYSIS_WARN_SEC = 300  # 이 시간(초) 넘게 실행 중이면 경고 로그 시작 — 평균(180초)의 약 1.7배
+_INVEST_ANALYSIS_WATCHDOG_INTERVAL = 60  # 워치독 점검 주기(초)
 
 _invest_analysis_queue:   "queue.Queue[str]" = queue.Queue()
 _invest_analysis_pending: set              = set()   # 대기열 등록 + 실행 중 종목 (중복 등록 방지)
@@ -2555,7 +2557,7 @@ def _invest_analysis_worker():
                 print(f"[투자분석] {code} 실행 실패(rc={result.returncode}): {err}")
                 _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'rc={result.returncode}: {err[-300:]}'}
             else:
-                print(f"[투자분석] {code} 실행 완료 — 다음 조회부터 반영")
+                print(f"[투자분석] {code} 실행 완료 - 다음 조회부터 반영")
         except subprocess.TimeoutExpired:
             print(f"[투자분석] {code} 실행 시간 초과 ({_INVEST_ANALYSIS_TIMEOUT}초)")
             _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'{_INVEST_ANALYSIS_TIMEOUT}초 시간 초과'}
@@ -2570,7 +2572,35 @@ def _invest_analysis_worker():
             _invest_analysis_queue.task_done()
 
 
-_threading.Thread(target=_invest_analysis_worker, daemon=True).start()
+def _invest_analysis_watchdog():
+    """현재 실행 중인 mvp_graph 가 _INVEST_ANALYSIS_WARN_SEC(기본 5분)를 넘게 걸리면
+    _INVEST_ANALYSIS_WATCHDOG_INTERVAL(기본 60초)마다 경고 로그를 반복 출력한다.
+    타임아웃(_INVEST_ANALYSIS_TIMEOUT, 기본 600초)까지 기다리지 않고도 지연/멈춤 상황을
+    서버 콘솔에서 빨리 알아채기 위함 — mvp_graph 평균 소요시간은 약 180초."""
+    while True:
+        time.sleep(_INVEST_ANALYSIS_WATCHDOG_INTERVAL)
+        try:
+            with _invest_analysis_lock:
+                cur_code    = _invest_analysis_current['code']
+                cur_started = _invest_analysis_current['started_at']
+                waiting_cnt = len(_invest_analysis_queued_at)
+            if not cur_code or not cur_started:
+                continue
+            elapsed = (datetime.now() - cur_started).total_seconds()
+            if elapsed >= _INVEST_ANALYSIS_WARN_SEC:
+                print(f"[투자분석][경고] {cur_code} 실행 {int(elapsed)}초째 진행 중 "
+                      f"(평균 180초, 타임아웃 {_INVEST_ANALYSIS_TIMEOUT}초) - 대기 {waiting_cnt}건 밀림")
+        except Exception as e:
+            # 워치독 스레드가 여기서 죽으면 이후 경고가 영구히 끊기므로, 어떤 예외가 나도 삼키고
+            # 다음 점검 주기에 계속 돈다(예: 콘솔 인코딩이 이모지/특수문자를 못 받는 환경 등).
+            try:
+                print(f"[투자분석][워치독 오류] {e}")
+            except Exception:
+                pass
+
+
+_threading.Thread(target=_invest_analysis_worker,   daemon=True).start()
+_threading.Thread(target=_invest_analysis_watchdog, daemon=True).start()
 
 
 @app.route('/api/invest-analysis/queue')
