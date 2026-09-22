@@ -2513,6 +2513,9 @@ _INVEST_ANALYSIS_TIMEOUT = 1800  # mvp_graph.py 1건당 최대 대기(초) — L
 _invest_analysis_queue:   "queue.Queue[str]" = queue.Queue()
 _invest_analysis_pending: set              = set()   # 대기열 등록 + 실행 중 종목 (중복 등록 방지)
 _invest_analysis_lock     = _threading.Lock()
+_invest_analysis_queued_at: dict = {}   # code → 대기열 등록 시각 (대기 중인 것만; 실행 시작하면 제거)
+_invest_analysis_current:  dict = {'code': None, 'started_at': None}   # 현재 실행 중인 1건 (없으면 code=None)
+_invest_analysis_last_error: dict = {}  # code → {'at': datetime, 'msg': str} (조회용, 최근 실패만 보관)
 
 def _enqueue_invest_analysis(code: str):
     """mvp_graph.py 분석을 백그라운드 대기열에 등록 (입력 순서대로 워커가 1건씩 순차 실행)."""
@@ -2520,6 +2523,7 @@ def _enqueue_invest_analysis(code: str):
         if code in _invest_analysis_pending:
             return
         _invest_analysis_pending.add(code)
+        _invest_analysis_queued_at[code] = datetime.now()
     _invest_analysis_queue.put(code)
     print(f"[투자분석] {code} 백그라운드 분석 대기열 등록")
 
@@ -2529,6 +2533,10 @@ def _invest_analysis_worker():
     동시 실행을 막아 로컬 LLM(Ollama) 부하를 피하고, 조회 순서(입력 순서)를 보장한다."""
     while True:
         code = _invest_analysis_queue.get()
+        with _invest_analysis_lock:
+            _invest_analysis_queued_at.pop(code, None)
+            _invest_analysis_current['code'] = code
+            _invest_analysis_current['started_at'] = datetime.now()
         try:
             print(f"[투자분석] {code} mvp_graph 실행 시작")
             if _INVEST_POINT_SSH_HOST:
@@ -2545,19 +2553,57 @@ def _invest_analysis_worker():
             if result.returncode != 0:
                 err = result.stderr.decode('utf-8', errors='replace')[-2000:]
                 print(f"[투자분석] {code} 실행 실패(rc={result.returncode}): {err}")
+                _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'rc={result.returncode}: {err[-300:]}'}
             else:
                 print(f"[투자분석] {code} 실행 완료 — 다음 조회부터 반영")
         except subprocess.TimeoutExpired:
             print(f"[투자분석] {code} 실행 시간 초과 ({_INVEST_ANALYSIS_TIMEOUT}초)")
+            _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'{_INVEST_ANALYSIS_TIMEOUT}초 시간 초과'}
         except Exception as e:
             print(f"[투자분석] {code} 실행 오류: {e}")
+            _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': str(e)}
         finally:
             with _invest_analysis_lock:
                 _invest_analysis_pending.discard(code)
+                _invest_analysis_current['code'] = None
+                _invest_analysis_current['started_at'] = None
             _invest_analysis_queue.task_done()
 
 
 _threading.Thread(target=_invest_analysis_worker, daemon=True).start()
+
+
+@app.route('/api/invest-analysis/queue')
+def invest_analysis_queue():
+    """투자분석(mvp_graph/Ollama) 백그라운드 대기열 상태 조회 — 디버그/모니터링용.
+    현재 실행 중인 종목과 경과시간, 대기 중인 종목 목록(등록 순서)과 대기시간,
+    최근 실패 이력(종목당 마지막 1건)을 반환한다."""
+    now = datetime.now()
+    with _invest_analysis_lock:
+        cur_code = _invest_analysis_current['code']
+        cur_started = _invest_analysis_current['started_at']
+        current = None
+        if cur_code:
+            current = {
+                'code': cur_code,
+                'started_at': cur_started.strftime('%Y-%m-%d %H:%M:%S') if cur_started else None,
+                'elapsed_sec': int((now - cur_started).total_seconds()) if cur_started else None,
+            }
+        waiting = [
+            {'code': c, 'queued_at': t.strftime('%Y-%m-%d %H:%M:%S'), 'wait_sec': int((now - t).total_seconds())}
+            for c, t in _invest_analysis_queued_at.items()
+        ]
+        errors = [
+            {'code': c, 'at': v['at'].strftime('%Y-%m-%d %H:%M:%S'), 'msg': v['msg']}
+            for c, v in sorted(_invest_analysis_last_error.items(), key=lambda kv: kv[1]['at'], reverse=True)[:20]
+        ]
+    return jsonify({
+        'current': current,
+        'waiting': waiting,
+        'queue_size': len(waiting),
+        'recent_errors': errors,
+        'timeout_sec': _INVEST_ANALYSIS_TIMEOUT,
+    })
 
 
 def _extract_bracket_points(text: str, tag: str) -> list:
