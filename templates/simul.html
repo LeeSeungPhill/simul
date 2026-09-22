@@ -2035,8 +2035,10 @@ createApp({
       // createGrid()는 이 버전에 없음).
       const gridOptions = {
         columnDefs: [
-          { headerName: '종목코드', field: 'code', width: 100 },
-          { headerName: '종목명',   field: 'name', width: 130 },
+          { headerName: '종목코드', field: 'code', width: 100, cellClass: 'ag-cell-link',
+            onCellClicked: (e) => openStockChart(e.data.code, e.data.name) },
+          { headerName: '종목명',   field: 'name', width: 130, cellClass: 'ag-cell-link',
+            onCellClicked: (e) => openStockChart(e.data.code, e.data.name) },
           { headerName: '매출증가', field: 'sales_rate',    width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '상승잔존', field: 'remain_rate',   width: 90, type: 'rightAligned', valueFormatter: p => _fmtPct(p.value) },
           { headerName: '현재가',   field: 'price',         width: 90, type: 'rightAligned', valueFormatter: p => _fmtWon(p.value) },
