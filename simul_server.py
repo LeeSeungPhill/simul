@@ -911,7 +911,8 @@ def _get_invest_point_fields(code):
     run_at이 현재일 기준 _INVEST_POINT_STALE_DAYS일보다 오래된 종목이면 그때만
     invest_point(mvp_graph.run) 를 실행해 새로 생성한다(수 분 소요 가능).
     반환: {price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
-           invest_risk, corp_name, run_at, from_cache} 또는 {'error': str} 단독."""
+           invest_risk, corp_name, run_at, from_cache, remain_rate_eligible,
+           value_check_eligible} 또는 {'error': str} 단독."""
     try:
         analysis_history = _import_analysis_history()
     except Exception as e:
@@ -980,6 +981,10 @@ def _get_invest_point_fields(code):
     listed_5y = row.get('매출액-5') is not None
     remain_rate_eligible = listed_5y and sales_grew_or_similar
 
+    # 가치주 체크 사항 입력 활성화 여부: analysis_history.value_signal 값이 존재(NULL이 아님)할 때만.
+    # True/False 어느 쪽이든 "값이 존재"로 취급 — 신호 자체가 아직 산출 안 된(NULL) 종목만 차단.
+    value_check_eligible = row.get('value_signal') is not None
+
     return {
         'corp_name':     row.get('corp_name'),
         'price':         price,
@@ -987,6 +992,7 @@ def _get_invest_point_fields(code):
         'ep_sales_amt':  row.get('매출액+1'),      # 내년(최근 추정) 매출액
         'dividend_rate': dividend_rate,            # DPS-5~DPS-1 평균 배당금 / 현재가
         'remain_rate_eligible': remain_rate_eligible,
+        'value_check_eligible': value_check_eligible,
         'report_dt':     row.get('rcept_dt'),      # 공시접수일자
         'invest_issue':  parsed['invest_issue'],
         'invest_point':  parsed['invest_point'],
@@ -1017,7 +1023,8 @@ def invest_mng_list():
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                    dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range
+                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range,
+                   value_invest
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
         """)
         rows = cur.fetchall()
@@ -1039,7 +1046,7 @@ def invest_mng_list():
         (code, name, main_business, high_price, market, size, industry, mktcap,
          sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
-         check_dt, proc_yn, down_range, up_range) = r
+         check_dt, proc_yn, down_range, up_range, value_invest) = r
 
         price = None
         if ac:
@@ -1050,14 +1057,23 @@ def invest_mng_list():
                 except (TypeError, ValueError):
                     price = None
 
-        # 상승잔존율: 실시간 현재가 기준 계산, 매출액-1→+1 증가/유사(단일 lookup과
-        # 동일 게이트) 조건을 만족할 때만 값을 채운다(analysis_history 단순 조회라
-        # side-effect 없음).
-        remain_rate = None
-        if analysis_history and price and high_price is not None:
+        # analysis_history 최신 이력 1건 조회(side-effect 없는 단순 조회) — 상승잔존율과
+        # 가치주 체크 사항 입력 가능 여부(value_signal 존재) 판정에 함께 사용한다.
+        ah_rows = None
+        if analysis_history:
             try:
                 ah_rows = analysis_history.get_recent(code, limit=1)
-                if ah_rows and _grew_or_similar(ah_rows[0].get('매출액-1'), ah_rows[0].get('매출액+1')):
+            except Exception:
+                ah_rows = None
+
+        value_check_eligible = bool(ah_rows) and ah_rows[0].get('value_signal') is not None
+
+        # 상승잔존율: 실시간 현재가 기준 계산, 매출액-1→+1 증가/유사(단일 lookup과
+        # 동일 게이트) 조건을 만족할 때만 값을 채운다.
+        remain_rate = None
+        if ah_rows and price and high_price is not None:
+            try:
+                if _grew_or_similar(ah_rows[0].get('매출액-1'), ah_rows[0].get('매출액+1')):
                     remain_rate = round((float(high_price) - price) / price * 100, 1)
             except Exception:
                 remain_rate = None
@@ -1073,6 +1089,7 @@ def invest_mng_list():
             'remain_rate': remain_rate, 'dividend_rate': _num_or_none(dividend_rate), 'sales_rate': _num_or_none(sales_rate),
             'value_check': value_check, 'dividend_check': dividend_check, 'growth_check': growth_check,
             'check_dt': check_dt, 'proc_yn': proc_yn, 'down_range': down_range, 'up_range': up_range,
+            'value_invest': value_invest, 'value_check_eligible': value_check_eligible,
         }
 
     with ThreadPoolExecutor(max_workers=min(len(rows), 8)) as ex:
@@ -1099,7 +1116,8 @@ def invest_mng_info():
                    price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                    invest_risk, check_dt, proc_yn,
                    remain_rate, dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, down_range, up_range
+                   value_check, dividend_check, growth_check, down_range, up_range,
+                   value_invest
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -1119,6 +1137,7 @@ def invest_mng_info():
             'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
             'remain_rate': row[17], 'dividend_rate': row[18], 'sales_rate': row[19],
             'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22], 'down_range': row[23], 'up_range': row[24],
+            'value_invest': row[25],
         }
 
     market_meta, market_meta_error = None, ''

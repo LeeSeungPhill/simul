@@ -745,7 +745,15 @@
 
       <div class="field full">
         <label>가치주 체크 사항</label>
-        <textarea v-model.trim="investMng.value_check" rows="2" placeholder="가치주 관점 체크 사항을 입력하세요"></textarea>
+        <textarea v-model.trim="investMng.value_check" rows="2" :disabled="!investMng.value_check_eligible"
+                  :placeholder="investMng.value_check_eligible ? '가치주 관점 체크 사항을 입력하세요' : ''"></textarea>
+        <div v-if="!investMng.value_check_eligible" class="invest-mng-hint">
+          analysis_history에 가치시그널(value_signal) 데이터가 없어 입력이 비활성화되었습니다.
+        </div>
+      </div>
+      <div class="field full" v-if="investMng.value_invest">
+        <label>가치투자 검토</label>
+        <textarea v-model="investMng.value_invest" rows="3" readonly></textarea>
       </div>
       <div class="field full">
         <label>배당주 체크 사항</label>
@@ -1987,8 +1995,8 @@ createApp({
       price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
       invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
       exclude: false, run_at: '', dividend_rate: null,
-      value_check: '', dividend_check: '', growth_check: '',
-      remain_rate_eligible: false,
+      value_check: '', dividend_check: '', growth_check: '', value_invest: '',
+      remain_rate_eligible: false, value_check_eligible: false,
     });
     const investMngLookingUp  = ref(false);
     const investMngPointError = ref('');
@@ -2158,6 +2166,8 @@ createApp({
       investMng.value.dividend_rate      = row.dividend_rate ?? null;
       investMng.value.remain_rate_eligible = row.remain_rate != null;
       investMng.value.value_check        = row.value_check ?? '';
+      investMng.value.value_invest       = row.value_invest ?? '';
+      investMng.value.value_check_eligible = !!row.value_check_eligible;
       investMng.value.dividend_check     = row.dividend_check ?? '';
       investMng.value.growth_check       = row.growth_check ?? '';
       investMng.value.check_dt           = row.check_dt ?? '';
@@ -2508,6 +2518,7 @@ createApp({
         investMng.value.value_check    = ex.value_check ?? '';
         investMng.value.dividend_check = ex.dividend_check ?? '';
         investMng.value.growth_check   = ex.growth_check ?? '';
+        investMng.value.value_invest   = ex.value_invest ?? '';
         if (!investMng.value.name && ex.name) investMng.value.name = ex.name;
 
         // 현재가는 market_meta(KIS 실시간 시세, FHKST01010100 stck_prpr)를 최우선으로 쓴다 —
@@ -2543,6 +2554,7 @@ createApp({
           investMng.value.invest_risk  = ex.invest_risk ?? '';
           investMng.value.dividend_rate = ex.dividend_rate ?? null;
           investMng.value.remain_rate_eligible = false;   // 최신 재무데이터 조회 실패 → 안전하게 미표시
+          investMng.value.value_check_eligible = false;   // 〃 → 가치주 체크 사항 입력도 안전하게 비활성화
           investMng.value.run_at       = '';
         } else {
           investMngFromCache.value     = !!ip.from_cache;
@@ -2555,6 +2567,7 @@ createApp({
           investMng.value.invest_risk  = ip.invest_risk || '';
           investMng.value.dividend_rate = ip.dividend_rate ?? null;
           investMng.value.remain_rate_eligible = !!ip.remain_rate_eligible;
+          investMng.value.value_check_eligible = !!ip.value_check_eligible;
           investMng.value.run_at       = ip.run_at || '';
           if (!investMng.value.name && ip.corp_name) investMng.value.name = ip.corp_name;
         }
