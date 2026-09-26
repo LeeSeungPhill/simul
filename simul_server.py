@@ -993,6 +993,7 @@ def _get_invest_point_fields(code):
         'dividend_rate': dividend_rate,            # DPS-5~DPS-1 평균 배당금 / 현재가
         'remain_rate_eligible': remain_rate_eligible,
         'value_check_eligible': value_check_eligible,
+        'value_invest':  row.get('value_invest'),  # 가치투자 검토(analysis_history 최신 이력 기준)
         'report_dt':     row.get('rcept_dt'),      # 공시접수일자
         'invest_issue':  parsed['invest_issue'],
         'invest_point':  parsed['invest_point'],
@@ -1023,8 +1024,7 @@ def invest_mng_list():
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                    dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range,
-                   value_invest
+                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
         """)
         rows = cur.fetchall()
@@ -1046,7 +1046,7 @@ def invest_mng_list():
         (code, name, main_business, high_price, market, size, industry, mktcap,
          sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
-         check_dt, proc_yn, down_range, up_range, value_invest) = r
+         check_dt, proc_yn, down_range, up_range) = r
 
         price = None
         if ac:
@@ -1057,8 +1057,9 @@ def invest_mng_list():
                 except (TypeError, ValueError):
                     price = None
 
-        # analysis_history 최신 이력 1건 조회(side-effect 없는 단순 조회) — 상승잔존율과
-        # 가치주 체크 사항 입력 가능 여부(value_signal 존재) 판정에 함께 사용한다.
+        # analysis_history 최신 이력 1건 조회(side-effect 없는 단순 조회) — 상승잔존율,
+        # 가치주 체크 사항 입력 가능 여부(value_signal 존재), 가치투자 검토(value_invest)
+        # 표시에 함께 사용한다.
         ah_rows = None
         if analysis_history:
             try:
@@ -1067,6 +1068,7 @@ def invest_mng_list():
                 ah_rows = None
 
         value_check_eligible = bool(ah_rows) and ah_rows[0].get('value_signal') is not None
+        value_invest         = ah_rows[0].get('value_invest') if ah_rows else None
 
         # 상승잔존율: 실시간 현재가 기준 계산, 매출액-1→+1 증가/유사(단일 lookup과
         # 동일 게이트) 조건을 만족할 때만 값을 채운다.
@@ -1116,8 +1118,7 @@ def invest_mng_info():
                    price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                    invest_risk, check_dt, proc_yn,
                    remain_rate, dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, down_range, up_range,
-                   value_invest
+                   value_check, dividend_check, growth_check, down_range, up_range
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -1137,7 +1138,6 @@ def invest_mng_info():
             'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
             'remain_rate': row[17], 'dividend_rate': row[18], 'sales_rate': row[19],
             'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22], 'down_range': row[23], 'up_range': row[24],
-            'value_invest': row[25],
         }
 
     market_meta, market_meta_error = None, ''
