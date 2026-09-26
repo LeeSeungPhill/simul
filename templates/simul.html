@@ -748,21 +748,21 @@
         <textarea v-model.trim="investMng.value_check" rows="2" :disabled="!investMng.value_check_eligible"
                   :placeholder="investMng.value_check_eligible ? '가치주 관점 체크 사항을 입력하세요' : ''"></textarea>
         <div v-if="!investMng.value_check_eligible" class="invest-mng-hint">
-          analysis_history에 가치시그널(value_signal) 데이터가 없어 입력이 비활성화되었습니다.
+          가치시그널이 없어 입력이 비활성화되었습니다.
         </div>
       </div>
       <div class="field full" v-if="investMng.value_invest">
         <label>가치투자 검토</label>
         <textarea v-model="investMng.value_invest" rows="3" readonly></textarea>
       </div>
-      <div class="field full">
+      <!-- <div class="field full">
         <label>배당주 체크 사항</label>
         <textarea v-model.trim="investMng.dividend_check" rows="2" placeholder="배당주 관점 체크 사항을 입력하세요"></textarea>
       </div>
       <div class="field full">
         <label>성장주 체크 사항</label>
         <textarea v-model.trim="investMng.growth_check" rows="2" placeholder="성장주 관점 체크 사항을 입력하세요"></textarea>
-      </div>
+      </div> -->
 
       <div class="field">
         <label>공시접수일자</label>
