@@ -132,8 +132,8 @@ UPSERT_SQL = """
          invest_issue, invest_point, invest_risk, report_dt, check_dt,
          price, high_price, sales_amt, ep_sales_amt,
          remain_rate, dividend_rate, sales_rate,
-         value_check, dividend_check, growth_check, proc_yn, crt_dt, mod_dt, down_range, up_range)
-    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+         value_check, dividend_check, growth_check, value_invest, proc_yn, crt_dt, mod_dt, down_range, up_range)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     ON CONFLICT (dt, code) DO UPDATE SET
         name          = EXCLUDED.name,
         market        = EXCLUDED.market,
@@ -156,6 +156,7 @@ UPSERT_SQL = """
         value_check   = EXCLUDED.value_check,
         dividend_check = EXCLUDED.dividend_check,
         growth_check  = EXCLUDED.growth_check,
+        value_invest  = EXCLUDED.value_invest,
         proc_yn       = EXCLUDED.proc_yn,
         mod_dt        = EXCLUDED.mod_dt,
         down_range    = EXCLUDED.down_range,
@@ -178,7 +179,7 @@ try:
                invest_issue, invest_point, invest_risk, report_dt, check_dt,
                price, high_price, sales_amt, ep_sales_amt,
                remain_rate, dividend_rate, sales_rate,
-               value_check, dividend_check, growth_check, proc_yn, down_range, up_range
+               value_check, dividend_check, growth_check, value_invest, proc_yn, down_range, up_range
         FROM public.invest_mng
         WHERE proc_yn = 'Y'
         ORDER BY code
@@ -197,7 +198,7 @@ try:
          invest_issue, invest_point, invest_risk, report_dt, check_dt,
          prev_price, high_price, sales_amt, ep_sales_amt,
          prev_remain_rate, dividend_rate, sales_rate,
-         value_check, dividend_check, growth_check, proc_yn, down_range, up_range) in rows:
+         value_check, dividend_check, growth_check, value_invest, proc_yn, down_range, up_range) in rows:
 
         cur_price = fetch_cur_price(ac, code)
         time.sleep(SLEEP_SEC)
@@ -226,7 +227,7 @@ try:
             invest_issue, invest_point, invest_risk, report_dt, check_dt,
             price, high_price, sales_amt, ep_sales_amt,
             remain_rate, dividend_rate, sales_rate,
-            value_check, dividend_check, growth_check, proc_yn, now, now, down_range, up_range,
+            value_check, dividend_check, growth_check, value_invest, proc_yn, now, now, down_range, up_range,
         ))
 
         # 현재가를 조회한 종목은 invest_mng 원본도 동일 값으로 갱신

@@ -1022,7 +1022,7 @@ def invest_mng_list():
         cur = conn.cursor()
         cur.execute("""
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
-                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+                   sales_amt, ep_sales_amt, report_dt,
                    dividend_rate, sales_rate,
                    value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
@@ -1044,7 +1044,7 @@ def invest_mng_list():
 
     def _enrich(r):
         (code, name, main_business, high_price, market, size, industry, mktcap,
-         sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
+         sales_amt, ep_sales_amt, report_dt,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
          check_dt, proc_yn, down_range, up_range) = r
 
@@ -1069,6 +1069,12 @@ def invest_mng_list():
 
         value_check_eligible = bool(ah_rows) and ah_rows[0].get('value_signal') is not None
         value_invest         = ah_rows[0].get('value_invest') if ah_rows else None
+
+        # 핵심이슈/투자포인트/리스크: invest_mng 저장 컬럼이 아니라 analysis_history 최신
+        # 이력의 investment_summary를 단일 lookup(_get_invest_point_fields)과 동일하게 파싱.
+        parsed_summary = _parse_investment_summary(ah_rows[0].get('investment_summary') if ah_rows else None)
+        invest_issue, invest_point, invest_risk = (
+            parsed_summary['invest_issue'], parsed_summary['invest_point'], parsed_summary['invest_risk'])
 
         # 상승잔존율: 실시간 현재가 기준 계산, 매출액-1→+1 증가/유사(단일 lookup과
         # 동일 게이트) 조건을 만족할 때만 값을 채운다.
@@ -1115,8 +1121,7 @@ def invest_mng_info():
         cur = conn.cursor()
         cur.execute("""
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
-                   price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
-                   invest_risk, check_dt, proc_yn,
+                   price, sales_amt, ep_sales_amt, report_dt, check_dt, proc_yn,
                    remain_rate, dividend_rate, sales_rate,
                    value_check, dividend_check, growth_check, down_range, up_range
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
@@ -1134,10 +1139,9 @@ def invest_mng_info():
             'code': row[0], 'name': row[1], 'main_business': row[2], 'high_price': row[3],
             'market': row[4], 'size': row[5], 'industry': row[6], 'mktcap': row[7],
             'price': row[8], 'sales_amt': row[9], 'ep_sales_amt': row[10],
-            'report_dt': row[11], 'invest_issue': row[12], 'invest_point': row[13],
-            'invest_risk': row[14], 'check_dt': row[15], 'proc_yn': row[16],
-            'remain_rate': row[17], 'dividend_rate': row[18], 'sales_rate': row[19],
-            'value_check': row[20], 'dividend_check': row[21], 'growth_check': row[22], 'down_range': row[23], 'up_range': row[24],
+            'report_dt': row[11], 'check_dt': row[12], 'proc_yn': row[13],
+            'remain_rate': row[14], 'dividend_rate': row[15], 'sales_rate': row[16],
+            'value_check': row[17], 'dividend_check': row[18], 'growth_check': row[19], 'down_range': row[20], 'up_range': row[21],
         }
 
     market_meta, market_meta_error = None, ''
@@ -1185,6 +1189,7 @@ def invest_mng_apply():
     value_check     = (data.get('value_check') or '').strip() or None
     dividend_check  = (data.get('dividend_check') or '').strip() or None
     growth_check    = (data.get('growth_check') or '').strip() or None
+    value_invest    = (data.get('value_invest') or '').strip() or None
     check_dt      = datetime.now().strftime('%Y%m%d')
     exclude       = bool(data.get('exclude'))
     proc_yn       = 'N' if exclude else 'Y'
@@ -1204,13 +1209,13 @@ def invest_mng_apply():
                     industry = %s, mktcap = %s, price = %s, sales_amt = %s, ep_sales_amt = %s,
                     report_dt = %s, invest_issue = %s, invest_point = %s, invest_risk = %s,
                     remain_rate = %s, dividend_rate = %s, sales_rate = %s,
-                    value_check = %s, dividend_check = %s, growth_check = %s,
+                    value_check = %s, dividend_check = %s, growth_check = %s, value_invest = %s,
                     check_dt = %s, proc_yn = %s, mod_dt = %s, down_range = %s, up_range = %s
                 WHERE code = %s AND proc_yn = 'Y'
             """, (name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
-                  value_check, dividend_check, growth_check,
+                  value_check, dividend_check, growth_check, value_invest,
                   check_dt, proc_yn, datetime.now(), down_range, up_range, code))
         else:
             cur.execute("""
@@ -1218,13 +1223,13 @@ def invest_mng_apply():
                     (code, name, main_business, high_price, market, size, industry, mktcap,
                      price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                      invest_risk, remain_rate, dividend_rate, sales_rate,
-                     value_check, dividend_check, growth_check,
+                     value_check, dividend_check, growth_check, value_invest,
                      check_dt, proc_yn, crt_dt, mod_dt, down_range, up_range)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (code, name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
-                  value_check, dividend_check, growth_check,
+                  value_check, dividend_check, growth_check, value_invest,
                   check_dt, proc_yn, datetime.now(), datetime.now(), down_range, up_range))
         conn.commit()
         cur.close()
