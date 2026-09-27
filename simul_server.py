@@ -916,7 +916,7 @@ def _get_invest_point_fields(code):
     try:
         analysis_history = _import_analysis_history()
     except Exception as e:
-        return {'error': f'analysis_history 모듈 로드 실패: {e}'}
+        return {'error': f'투자분석 이력 모듈 로드 실패: {e}'}
 
     try:
         rows = analysis_history.get_recent(code, limit=1)
@@ -941,15 +941,15 @@ def _get_invest_point_fields(code):
         try:
             mvp_graph = _import_mvp_graph()
         except Exception as e:
-            return {'error': f'invest_point 모듈 로드 실패: {e}'}
+            return {'error': f'투자분석 모듈 로드 실패: {e}'}
         try:
             mvp_graph.run(code)
         except Exception as e:
-            return {'error': f'invest_point 분석 실행 오류: {e}'}
+            return {'error': f'투자 분석 실행 오류: {e}'}
         try:
             rows = analysis_history.get_recent(code, limit=1)
         except Exception as e:
-            return {'error': f'투자분석 이력 조회 오류: {e}'}
+            return {'error': f'최근 투자분석 이력 조회 오류: {e}'}
         if not rows:
             return {'error': '투자분석 결과 저장 실패(이력 없음)'}
 
@@ -981,9 +981,9 @@ def _get_invest_point_fields(code):
     listed_5y = row.get('매출액-5') is not None
     remain_rate_eligible = listed_5y and sales_grew_or_similar
 
-    # 가치주 체크 사항 입력 활성화 여부: analysis_history.value_signal 값이 존재(NULL이 아님)할 때만.
-    # True/False 어느 쪽이든 "값이 존재"로 취급 — 신호 자체가 아직 산출 안 된(NULL) 종목만 차단.
-    value_check_eligible = row.get('value_signal') is not None
+    # 가치주 체크 사항 입력 활성화 여부: analysis_history.value_signal이 True인 종목만.
+    # False(가치시그널 미충족)나 NULL(미산출)은 모두 비활성화.
+    value_check_eligible = row.get('value_signal') is True
 
     return {
         'corp_name':     row.get('corp_name'),
@@ -1058,7 +1058,7 @@ def invest_mng_list():
                     price = None
 
         # analysis_history 최신 이력 1건 조회(side-effect 없는 단순 조회) — 상승잔존율,
-        # 가치주 체크 사항 입력 가능 여부(value_signal 존재), 가치투자 검토(value_invest)
+        # 가치주 체크 사항 입력 가능 여부(value_signal이 True), 가치투자 검토(value_invest)
         # 표시에 함께 사용한다.
         ah_rows = None
         if analysis_history:
@@ -1067,7 +1067,8 @@ def invest_mng_list():
             except Exception:
                 ah_rows = None
 
-        value_check_eligible = bool(ah_rows) and ah_rows[0].get('value_signal') is not None
+        # False(가치시그널 미충족)나 NULL(미산출) 모두 비활성화 — True인 경우만 입력 허용.
+        value_check_eligible = bool(ah_rows) and ah_rows[0].get('value_signal') is True
         value_invest         = ah_rows[0].get('value_invest') if ah_rows else None
 
         # 핵심이슈/투자포인트/리스크: invest_mng 저장 컬럼이 아니라 analysis_history 최신
@@ -3668,7 +3669,7 @@ def dart_company_info():
     # stock_code(6) → corp_code(8) 변환 (corpCode.xml 불일치 시 종목명으로 fallback)
     corp_code = _dart_stock_to_corp(code, stock_name)
     if not corp_code:
-        return jsonify({'error': f'DART corp_code 없음 ({code})'}), 404
+        return jsonify({'error': f'DART 종목코드 없음 ({code})'}), 404
 
     # 기업 기본정보 + 병렬 데이터 수집
     cls_map = {'Y': '유가증권', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}

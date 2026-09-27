@@ -668,7 +668,7 @@
         <div v-if="investMng.name" style="font-size:.78rem;color:#4361ee;margin-top:4px;padding-left:2px">
           <span class="stock-name-link" @click="openStockChart(investMng.code, investMng.name)">{{ investMng.name }}</span>
           <span v-if="investMngLookingUp" style="color:#aaa;margin-left:6px">조회/분석 중... (신규 종목은 수 분 소요될 수 있습니다)</span>
-          <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">invest_point 신규 분석 완료</span>
+          <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">신규 분석 완료</span>
           <span v-if="!investMngLookingUp && investMngStale" style="color:#f4a261;margin-left:6px">⚠ {{ investMngStaleDays }}일 전 분석된 오래된 정보입니다</span>
           <span v-if="investMng.exclude" style="color:#e63946;margin-left:6px">투자 관리 제외 대상으로 표시됨</span>
         </div>
@@ -732,15 +732,15 @@
 
       <div class="field full">
         <label>핵심 이슈</label>
-        <textarea v-model="investMng.invest_issue" rows="3" readonly placeholder="종목 조회 시 invest_point 분석 결과가 자동으로 채워집니다"></textarea>
+        <textarea v-model="investMng.invest_issue" rows="3" readonly placeholder="종목 분석 완료시 자동으로 채워집니다"></textarea>
       </div>
       <div class="field full">
         <label>투자포인트</label>
-        <textarea v-model="investMng.invest_point" rows="3" readonly></textarea>
+        <textarea v-model="investMng.invest_point" rows="3" readonly placeholder="종목 분석 완료시 자동으로 채워집니다"></textarea>
       </div>
       <div class="field full">
         <label>리스크</label>
-        <textarea v-model="investMng.invest_risk" rows="3" readonly></textarea>
+        <textarea v-model="investMng.invest_risk" rows="3" readonly placeholder="종목 분석 완료시 자동으로 채워집니다"></textarea>
       </div>
 
       <div class="field full">
@@ -748,12 +748,12 @@
         <textarea v-model.trim="investMng.value_check" rows="2" :disabled="!investMng.value_check_eligible"
                   :placeholder="investMng.value_check_eligible ? '가치주 관점 체크 사항을 입력하세요' : ''"></textarea>
         <div v-if="!investMng.value_check_eligible" class="invest-mng-hint">
-          가치시그널이 없어 입력이 비활성화되었습니다.
+          가치시그널(value_signal) 조건을 충족하지 않아 입력이 비활성화되었습니다.
         </div>
       </div>
       <div class="field full" v-if="investMng.value_invest">
         <label>가치투자 검토</label>
-        <textarea v-model="investMng.value_invest" rows="3" readonly></textarea>
+        <textarea v-model="investMng.value_invest" rows="3" readonly placeholder="가치투자 검토 사항 존재시 자동으로 채워집니다"></textarea>
       </div>
       <!-- <div class="field full">
         <label>배당주 체크 사항</label>
