@@ -748,7 +748,7 @@
         <textarea v-model.trim="investMng.value_check" rows="2" :disabled="!investMng.value_check_eligible"
                   :placeholder="investMng.value_check_eligible ? '가치주 관점 체크 사항을 입력하세요' : ''"></textarea>
         <div v-if="!investMng.value_check_eligible" class="invest-mng-hint">
-          가치시그널(value_signal) 조건을 충족하지 않아 입력이 비활성화되었습니다.
+          가치주 조건을 충족하지 않아 입력이 비활성화되었습니다.
         </div>
       </div>
       <div class="field full" v-if="investMng.value_invest">
