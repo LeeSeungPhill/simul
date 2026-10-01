@@ -692,15 +692,15 @@
 
       <div class="field">
         <label>매수하단 (원)</label>
-        <input v-model.number="investMng.down_range" type="number" min="0" placeholder="예) 90000" />
+        <input :value="fmtAmtInput(investMng.down_range)" @input="onAmtInput($event, investMng, 'down_range')" type="text" inputmode="numeric" placeholder="예) 90,000" />
       </div>
       <div class="field">
         <label>매수상단 (원)</label>
-        <input v-model.number="investMng.up_range" type="number" min="0" placeholder="예) 90000" />
+        <input :value="fmtAmtInput(investMng.up_range)" @input="onAmtInput($event, investMng, 'up_range')" type="text" inputmode="numeric" placeholder="예) 90,000" />
       </div>
       <div class="field">
         <label>목표가 (원)</label>
-        <input v-model.number="investMng.high_price" type="number" min="0" placeholder="예) 90000" />
+        <input :value="fmtAmtInput(investMng.high_price)" @input="onAmtInput($event, investMng, 'high_price')" type="text" inputmode="numeric" placeholder="예) 90,000" />
       </div>
       <div class="field">
         <label>현재가 (원)</label>
@@ -1003,7 +1003,7 @@
         <label>매수가 (원) *</label>
         <input
           :value="fmtAmtInput(form.buy_price)"
-          @input="onAmtInput($event, 'buy_price')"
+          @input="onAmtInput($event, form, 'buy_price')"
           type="text"
           inputmode="numeric"
           placeholder="예) 75,000"
@@ -1014,7 +1014,7 @@
         <label>이탈가 (원) *</label>
         <input
           :value="fmtAmtInput(form.loss_price)"
-          @input="onAmtInput($event, 'loss_price')"
+          @input="onAmtInput($event, form, 'loss_price')"
           type="text"
           inputmode="numeric"
           placeholder="예) 68,000"
@@ -1032,7 +1032,7 @@
         <input
           v-if="useLossAmt"
           :value="fmtAmtInput(form.loss_input_amt)"
-          @input="onAmtInput($event, 'loss_input_amt')"
+          @input="onAmtInput($event, form, 'loss_input_amt')"
           type="text"
           inputmode="numeric"
           placeholder="손절금액 (예) 150,000"
@@ -1040,7 +1040,7 @@
         />
         <input
           :value="fmtAmtInput(form.buy_amount)"
-          @input="onAmtInput($event, 'buy_amount')"
+          @input="onAmtInput($event, form, 'buy_amount')"
           type="text"
           inputmode="numeric"
           placeholder="예) 5,000,000"
@@ -2031,10 +2031,10 @@ createApp({
     function _fmtWon(v) { return v != null ? Number(v).toLocaleString('ko-KR') : '-'; }
     // 금액 입력칸: 콤마 표시 + 숫자 값 저장
     function fmtAmtInput(v) { return v != null && v !== '' ? Number(v).toLocaleString('ko-KR') : ''; }
-    function onAmtInput(e, key) {
+    function onAmtInput(e, obj, key) {
       const d = e.target.value.replace(/[^0-9]/g, '');
-      form.value[key] = d ? Number(d) : null;
-      e.target.value = fmtAmtInput(form.value[key]);
+      obj[key] = d ? Number(d) : null;
+      e.target.value = fmtAmtInput(obj[key]);
     }
 
     // AgGrid 페이지네이션 패널 한글화 (두 그리드 공용)
