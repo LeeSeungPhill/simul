@@ -830,6 +830,32 @@ def stock_info():
             ))
         ) if suggest_loss_market_ratio > 0 else amt_min
 
+        # 단기시장 기준 제안 매수금액: reservebot.py(매수자동등록)와 동일 로직 —
+        # kospi_short/kosdak_short('01'=단기 상승 → 0.5, '02'=단기 하락 → 0.25,
+        # 그 외/NULL은 단기시장 기준 미적용)를 종목 시장구분에 맞춰 적용.
+        suggest_short_amt = 0
+        short_label       = ''
+        try:
+            conn_sh = get_conn()
+            cur_sh  = conn_sh.cursor()
+            cur_sh.execute(
+                'SELECT kospi_short, kosdak_short FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s',
+                ('74346047',)
+            )
+            sh_row = cur_sh.fetchone()
+            cur_sh.close()
+            conn_sh.close()
+            if sh_row:
+                _mkt_str = str(market).upper()
+                _stk_mkt = 'KOSPI' if ('ETF' in _mkt_str or 'KOSPI' in _mkt_str or '코스피' in str(market)) else 'KOSDAQ'
+                _short_val = sh_row[0] if _stk_mkt == 'KOSPI' else sh_row[1]
+                _short_factor = {'01': 0.5, '02': 0.25}.get(str(_short_val).strip()) if _short_val is not None else None
+                if _short_factor is not None:
+                    suggest_short_amt = int(max(amt_min, min(amt_max, amt_min + _short_factor * (amt_max - amt_min))))
+                    short_label = f"단기 {'코스피' if _stk_mkt == 'KOSPI' else '코스닥'} {'상승' if str(_short_val).strip() == '01' else '하락'}"
+        except Exception:
+            pass
+
         return jsonify({
             'code': code, 'market': market, 'size': size,
             'industry': industry, 'mktcap': mktcap,
@@ -841,6 +867,9 @@ def stock_info():
             'suggest_loss_amt_str': f"{suggest_loss_amt:,}원",
             'suggest_loss_market_ratio': suggest_loss_market_ratio,
             'suggest_loss_base_dt': suggest_loss_base_dt,
+            'suggest_short_amt': suggest_short_amt,
+            'suggest_short_amt_str': f"{suggest_short_amt:,}원" if suggest_short_amt else '',
+            'short_label': short_label,
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
