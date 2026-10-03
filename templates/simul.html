@@ -498,6 +498,29 @@
     .stock-name-link { cursor:pointer; text-decoration:underline; }
     .stock-name-link:hover { color:#1d3ad1; font-weight:600; }
 
+    /* 가치주 체크 사항 반영 검토(AI) */
+    .btn-review {
+      border: none; border-radius: 7px; padding: 7px 14px; font-size: .8rem; font-weight: 600;
+      background: #4361ee; color: #fff; cursor: pointer;
+    }
+    .btn-review.secondary { background: #f0f2f5; color: #555; }
+    .btn-review:disabled { opacity: .5; cursor: not-allowed; }
+    .review-box {
+      margin-top: 8px; padding: 10px 12px; border: 1px solid #d0d4ff; border-radius: 9px; background: #f8f9ff;
+    }
+    .review-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .78rem; margin-bottom: 6px; }
+    .review-status { font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+    .rs-ok       { background: #e6f9ec; color: #1a8f3c; }
+    .rs-warn     { background: #fff4e5; color: #c56a00; }
+    .rs-fallback { background: #fff1f2; color: #e63946; }
+    .review-flagged {
+      font-size: .76rem; color: #c56a00; background: #fff8ee; border: 1px solid #ffe2b8;
+      border-radius: 7px; padding: 6px 10px; margin: 4px 0;
+    }
+    .review-flagged ul { margin: 4px 0 0 18px; padding: 0; }
+    .review-sources { font-size: .76rem; margin-top: 6px; line-height: 1.6; }
+    .review-sources summary { cursor: pointer; color: #4361ee; }
+
     /* 종목 차트 팝업 */
     .chart-modal-backdrop {
       position: fixed; inset: 0; z-index: 1000;
@@ -754,6 +777,67 @@
       <div class="field full" v-if="investMng.value_invest">
         <label>가치투자 검토</label>
         <textarea v-model="investMng.value_invest" rows="3" readonly placeholder="가치투자 검토 사항 존재시 자동으로 채워집니다"></textarea>
+      </div>
+
+      <!-- 가치주 체크 사항 반영 검토(Ollama): 최근 리포트·체크사항 관련 뉴스와 대조해 보완 섹션 생성 -->
+      <div class="field full" v-if="investMng.value_check_eligible">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn-review" @click="startValueReview"
+                  :disabled="!investMng.value_check || valueReview.running">🔍 체크사항 반영 검토 (AI)</button>
+          <span v-if="valueReview.running" class="invest-mng-hint" style="margin:0">
+            {{ valueReview.status === 'queued' ? '대기 중' : '분석 중' }}... {{ valueReview.elapsed }}초
+            (리포트·뉴스 수집 후 Ollama 분석, 보통 1~3분)
+          </span>
+          <span v-else-if="valueReview.error" class="invest-mng-error" style="margin:0">⚠️ {{ valueReview.error }}</span>
+          <span v-else-if="!investMng.value_check" class="invest-mng-hint" style="margin:0">
+            가치주 체크 사항을 입력하면 최근 리포트·관련 뉴스와 대조해 검토합니다.
+          </span>
+        </div>
+
+        <div v-if="valueReview.result" class="review-box">
+          <div class="review-head">
+            <span class="review-status" :class="'rs-' + valueReview.result.status">{{ reviewStatusLabel(valueReview.result.status) }}</span>
+            <span v-if="valueReview.result.keywords.length">검색 키워드
+              <span v-for="k in valueReview.result.keywords" :key="k" class="info-chip">{{ k }}</span>
+            </span>
+            <span class="invest-mng-hint" style="margin:0">
+              리포트 {{ valueReview.result.reports.length }}건 · 뉴스 {{ valueReview.result.news.length }}건 ·
+              {{ valueReview.result.elapsed_sec }}초<span v-if="valueReview.result.regenerated"> · 1회 재생성</span>
+            </span>
+          </div>
+          <div v-if="valueReviewStale" class="invest-mng-error">⚠️ 검토 후 가치주 체크 사항이 바뀌었습니다. 다시 검토하세요.</div>
+          <div v-if="valueReview.result.problems.length" class="invest-mng-error">
+            자동 검토가 검증을 통과하지 못해 체크 사항만 기록합니다: {{ valueReview.result.problems.join(' / ') }}
+          </div>
+          <div v-if="valueReview.result.flagged.length" class="review-flagged">
+            ⚠️ 자료 근거 확인이 필요한 문장 (자동 검증 지적 — 반영 전 확인·수정하세요)
+            <ul><li v-for="(f, i) in valueReview.result.flagged" :key="i">{{ f }}</li></ul>
+          </div>
+          <textarea v-model="valueReview.draft" rows="14"></textarea>
+          <details class="review-sources">
+            <summary>근거 자료 보기 (리포트 {{ valueReview.result.reports.length }} · 뉴스 {{ valueReview.result.news.length }})</summary>
+            <div v-for="r in valueReview.result.reports" :key="r.id">
+              <b>[{{ r.id }}]</b> {{ r.date }} {{ r.broker }}
+              <a :href="r.report_url" target="_blank" rel="noopener">{{ r.title }}</a>
+              <span v-if="r.opinion"> · {{ r.opinion }}</span>
+              <span v-if="r.target_price"> · 목표가 {{ fmt(r.target_price) }}원</span>
+            </div>
+            <div v-for="n in valueReview.result.news" :key="n.id">
+              <b>[{{ n.id }}]</b> {{ n.date }}
+              <a :href="n.link" target="_blank" rel="noopener">{{ n.title }}</a>
+              <span class="invest-mng-hint"> ({{ n.matched.join(', ') }})</span>
+            </div>
+          </details>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button type="button" class="btn-review" @click="acceptValueReview" :disabled="valueReviewStale">검토본으로 반영</button>
+            <button type="button" class="btn-review secondary" @click="resetValueReview">닫기</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field full" v-if="investMng.value_review">
+        <label>가치투자 검토 (체크사항 반영본)</label>
+        <textarea v-model="investMng.value_review" rows="8" readonly></textarea>
       </div>
       <!-- <div class="field full">
         <label>배당주 체크 사항</label>
@@ -2003,7 +2087,7 @@ createApp({
       price: null, sales_amt: null, ep_sales_amt: null, report_dt: '',
       invest_issue: '', invest_point: '', invest_risk: '', check_dt: '',
       exclude: false, run_at: '', dividend_rate: null,
-      value_check: '', dividend_check: '', growth_check: '', value_invest: '',
+      value_check: '', dividend_check: '', growth_check: '', value_invest: '', value_review: '',
       remain_rate_eligible: false, value_check_eligible: false,
     });
     const investMngLookingUp  = ref(false);
@@ -2182,12 +2266,78 @@ createApp({
       investMng.value.remain_rate_eligible = row.remain_rate != null;
       investMng.value.value_check        = row.value_check ?? '';
       investMng.value.value_invest       = row.value_invest ?? '';
+      investMng.value.value_review       = row.value_review ?? '';
       investMng.value.value_check_eligible = !!row.value_check_eligible;
+      resetValueReview();
       investMng.value.dividend_check     = row.dividend_check ?? '';
       investMng.value.growth_check       = row.growth_check ?? '';
       investMng.value.check_dt           = row.check_dt ?? '';
       investMng.value.exclude            = row.proc_yn === 'N';
       investMng.value.run_at             = '';
+    }
+
+    // ── 가치주 체크 사항 반영 검토(AI) — 백그라운드 작업 등록 후 3초 간격 폴링 ──
+    const _emptyValueReview = () => ({ running: false, jobId: '', status: '', elapsed: 0,
+                                       result: null, error: '', draft: '', check: '' });
+    const valueReview = ref(_emptyValueReview());
+    let valueReviewTimer = null;
+    // 검토 결과를 받은 뒤 체크 사항을 고치면, 그 결과는 이전 체크 사항 기준이라 반영을 막는다
+    const valueReviewStale = computed(() => !!valueReview.value.result &&
+      (investMng.value.value_check || '').trim() !== valueReview.value.check);
+
+    function resetValueReview() {
+      if (valueReviewTimer) clearTimeout(valueReviewTimer);
+      valueReviewTimer = null;
+      valueReview.value = _emptyValueReview();   // jobId가 비면 진행 중이던 폴링 응답도 버려진다
+    }
+
+    async function startValueReview() {
+      const check = (investMng.value.value_check || '').trim();
+      if (!investMng.value.code || !check) return;
+      resetValueReview();
+      Object.assign(valueReview.value, { running: true, status: 'queued', check });
+      try {
+        const res  = await fetch('/api/invest-mng/value-review', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: investMng.value.code, name: investMng.value.name, value_check: check }),
+        });
+        const data = await res.json();
+        if (!res.ok) { Object.assign(valueReview.value, { running: false, error: data.error || '검토 요청 오류' }); return; }
+        valueReview.value.jobId = data.job_id;
+        pollValueReview(data.job_id);
+      } catch (e) {
+        Object.assign(valueReview.value, { running: false, error: '서버 연결 오류: ' + e.message });
+      }
+    }
+
+    async function pollValueReview(jobId) {
+      if (valueReview.value.jobId !== jobId) return;   // 다른 종목 선택 등으로 초기화됨
+      try {
+        const res  = await fetch(`/api/invest-mng/value-review/${jobId}`);
+        const data = await res.json();
+        if (valueReview.value.jobId !== jobId) return;
+        if (!res.ok) { Object.assign(valueReview.value, { running: false, error: data.error || '진행 상태 조회 오류' }); return; }
+        Object.assign(valueReview.value, { status: data.status, elapsed: data.elapsed_sec });
+        if (data.status === 'done') {
+          Object.assign(valueReview.value, { running: false, result: data.result, draft: data.result.review });
+          return;
+        }
+        if (data.status === 'error') {
+          Object.assign(valueReview.value, { running: false, error: data.error || '검토 실패' });
+          return;
+        }
+      } catch (e) { /* 일시적 연결 오류는 다음 폴링에서 재시도 */ }
+      valueReviewTimer = setTimeout(() => pollValueReview(jobId), 3000);
+    }
+
+    function acceptValueReview() {
+      investMng.value.value_review = (valueReview.value.draft || '').trim();
+      resetValueReview();
+      showAlert("검토본을 반영했습니다. '투자 정보 적용'을 눌러야 저장됩니다.", 'success', 5000);
+    }
+
+    function reviewStatusLabel(s) {
+      return { ok: '검증 통과', warn: '근거 확인 필요', fallback: '자동 검토 실패' }[s] || s;
     }
 
     const INVEST_POINT_STALE_DAYS = 7;   // 백엔드 _INVEST_POINT_STALE_DAYS 와 동일 기준
@@ -2533,6 +2683,8 @@ createApp({
         investMng.value.value_check    = ex.value_check ?? '';
         investMng.value.dividend_check = ex.dividend_check ?? '';
         investMng.value.growth_check   = ex.growth_check ?? '';
+        investMng.value.value_review   = ex.value_review ?? '';
+        resetValueReview();
         if (!investMng.value.name && ex.name) investMng.value.name = ex.name;
 
         // 현재가는 market_meta(KIS 실시간 시세, FHKST01010100 stck_prpr)를 최우선으로 쓴다 —
@@ -2981,6 +3133,7 @@ createApp({
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
+      valueReview, valueReviewStale, startValueReview, acceptValueReview, resetValueReview, reviewStatusLabel,
       investMngGridEl, investMngListLoading, loadInvestMngList, investMngTotalCount,
       investMngFilterText, onInvestMngFilter,
       stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList, stockSearchTotalCount,

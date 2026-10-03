@@ -9,6 +9,7 @@ import requests
 import json
 import re
 import time
+import uuid
 import queue
 import threading as _threading
 import pandas as pd
@@ -899,6 +900,14 @@ def _import_mvp_graph():
     return mvp_graph
 
 
+def _import_value_check_review():
+    """value_check_review 모듈 지연 import(가치주 체크 사항 반영 검토 — Ollama 호출)."""
+    if _INVEST_POINT_DIR not in sys.path:
+        sys.path.insert(0, _INVEST_POINT_DIR)
+    import value_check_review
+    return value_check_review
+
+
 _SUMMARY_TAGS = (('핵심 이슈', 'invest_issue'), ('투자포인트', 'invest_point'), ('리스크', 'invest_risk'))
 
 
@@ -1053,7 +1062,8 @@ def invest_mng_list():
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    sales_amt, ep_sales_amt, report_dt,
                    dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range
+                   value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range,
+                   value_review
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
         """)
         rows = cur.fetchall()
@@ -1075,7 +1085,7 @@ def invest_mng_list():
         (code, name, main_business, high_price, market, size, industry, mktcap,
          sales_amt, ep_sales_amt, report_dt,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
-         check_dt, proc_yn, down_range, up_range) = r
+         check_dt, proc_yn, down_range, up_range, value_review) = r
 
         price = None
         if ac:
@@ -1128,6 +1138,7 @@ def invest_mng_list():
             'value_check': value_check, 'dividend_check': dividend_check, 'growth_check': growth_check,
             'check_dt': check_dt, 'proc_yn': proc_yn, 'down_range': down_range, 'up_range': up_range,
             'value_invest': value_invest, 'value_check_eligible': value_check_eligible,
+            'value_review': value_review,
         }
 
     with ThreadPoolExecutor(max_workers=min(len(rows), 8)) as ex:
@@ -1153,7 +1164,7 @@ def invest_mng_info():
             SELECT code, name, main_business, high_price, market, size, industry, mktcap,
                    price, sales_amt, ep_sales_amt, report_dt, check_dt, proc_yn,
                    remain_rate, dividend_rate, sales_rate,
-                   value_check, dividend_check, growth_check, down_range, up_range
+                   value_check, dividend_check, growth_check, down_range, up_range, value_review
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
@@ -1172,6 +1183,7 @@ def invest_mng_info():
             'report_dt': row[11], 'check_dt': row[12], 'proc_yn': row[13],
             'remain_rate': row[14], 'dividend_rate': row[15], 'sales_rate': row[16],
             'value_check': row[17], 'dividend_check': row[18], 'growth_check': row[19], 'down_range': row[20], 'up_range': row[21],
+            'value_review': row[22],
         }
 
     market_meta, market_meta_error = None, ''
@@ -1220,6 +1232,9 @@ def invest_mng_apply():
     dividend_check  = (data.get('dividend_check') or '').strip() or None
     growth_check    = (data.get('growth_check') or '').strip() or None
     value_invest    = (data.get('value_invest') or '').strip() or None
+    # 가치주 체크 사항 반영 검토본(담당자가 AI 검토 결과를 확인 후 반영한 것) — value_invest
+    # (배치 원본 스냅샷)와 구분해 별도 컬럼에 저장
+    value_review    = (data.get('value_review') or '').strip() or None
     check_dt      = datetime.now().strftime('%Y%m%d')
     exclude       = bool(data.get('exclude'))
     proc_yn       = 'N' if exclude else 'Y'
@@ -1240,12 +1255,13 @@ def invest_mng_apply():
                     report_dt = %s, invest_issue = %s, invest_point = %s, invest_risk = %s,
                     remain_rate = %s, dividend_rate = %s, sales_rate = %s,
                     value_check = %s, dividend_check = %s, growth_check = %s, value_invest = %s,
+                    value_review = %s,
                     check_dt = %s, proc_yn = %s, mod_dt = %s, down_range = %s, up_range = %s
                 WHERE code = %s AND proc_yn = 'Y'
             """, (name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
-                  value_check, dividend_check, growth_check, value_invest,
+                  value_check, dividend_check, growth_check, value_invest, value_review,
                   check_dt, proc_yn, datetime.now(), down_range, up_range, code))
         else:
             cur.execute("""
@@ -1253,13 +1269,13 @@ def invest_mng_apply():
                     (code, name, main_business, high_price, market, size, industry, mktcap,
                      price, sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point,
                      invest_risk, remain_rate, dividend_rate, sales_rate,
-                     value_check, dividend_check, growth_check, value_invest,
+                     value_check, dividend_check, growth_check, value_invest, value_review,
                      check_dt, proc_yn, crt_dt, mod_dt, down_range, up_range)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (code, name, main_business, high_price, market, size, industry, mktcap, price,
                   sales_amt, ep_sales_amt, report_dt, invest_issue, invest_point, invest_risk,
                   remain_rate, dividend_rate, sales_rate,
-                  value_check, dividend_check, growth_check, value_invest,
+                  value_check, dividend_check, growth_check, value_invest, value_review,
                   check_dt, proc_yn, datetime.now(), datetime.now(), down_range, up_range))
         conn.commit()
         cur.close()
@@ -1271,6 +1287,85 @@ def invest_mng_apply():
 
     message = '투자관리 대상에서 제외되었습니다.' if exclude else '투자관리 정보가 저장되었습니다.'
     return jsonify({'message': message, 'inserted': not exists, 'excluded': exclude})
+
+
+# ── 가치주 체크 사항 반영 검토(Ollama) — 백그라운드 작업 + 폴링 ──────────────
+# LLM 호출 3~5회라 1~3분 걸린다. 요청을 붙잡지 않도록 작업 id를 바로 돌려주고
+# 화면이 GET으로 진행 상태를 폴링한다. 워커 1개로 직렬 실행해 Ollama 동시 호출을 막는다.
+_value_review_executor = ThreadPoolExecutor(max_workers=1)
+_value_review_jobs: dict = {}            # job_id → {code, check, status, result, error, created, started, finished}
+_value_review_lock = _threading.Lock()
+_VALUE_REVIEW_JOB_TTL = 3600             # 끝난 작업 결과 보관 시간(초)
+
+
+def _run_value_review_job(job_id, code, name, original, value_check):
+    with _value_review_lock:
+        _value_review_jobs[job_id].update(status='running', started=time.time())
+    try:
+        vcr = _import_value_check_review()
+        result = vcr.run_review(code, name, original, value_check)
+        with _value_review_lock:
+            _value_review_jobs[job_id].update(status='done', result=result, finished=time.time())
+        print(f"[가치검토] {code} 완료 status={result.get('status')} {result.get('elapsed_sec')}초")
+    except Exception as e:
+        with _value_review_lock:
+            _value_review_jobs[job_id].update(status='error', error=str(e), finished=time.time())
+        print(f"[가치검토] {code} 오류: {e}")
+
+
+@app.route('/api/invest-mng/value-review', methods=['POST'])
+def invest_mng_value_review_start():
+    """가치주 체크 사항 반영 검토 작업 등록. 근거가 되는 가치투자 검토 원본은 클라이언트
+    값이 아니라 서버에서 analysis_history 최신 이력으로 다시 읽는다(입력 활성화 조건인
+    value_signal도 서버에서 재확인)."""
+    data        = request.get_json(force=True, silent=True) or {}
+    code        = str(data.get('code', '')).strip().zfill(6)
+    name        = str(data.get('name', '')).strip()
+    value_check = (data.get('value_check') or '').strip()
+    if not _is_valid_stock_code(code) or not name:
+        return jsonify({'error': '종목코드/종목명이 필요합니다.'}), 400
+    if not value_check:
+        return jsonify({'error': '가치주 체크 사항을 먼저 입력하세요.'}), 400
+
+    try:
+        rows = _import_analysis_history().get_recent(code, limit=1)
+    except Exception as e:
+        return jsonify({'error': f'투자분석 이력 조회 오류: {e}'}), 500
+    if not rows or rows[0].get('value_signal') is not True:
+        return jsonify({'error': '가치시그널(value_signal) 조건을 충족하지 않는 종목입니다.'}), 400
+    original = rows[0].get('value_invest') or ''
+
+    now = time.time()
+    with _value_review_lock:
+        for jid in [j for j, v in _value_review_jobs.items()
+                    if v.get('finished') and now - v['finished'] > _VALUE_REVIEW_JOB_TTL]:
+            _value_review_jobs.pop(jid, None)
+        # 같은 종목·같은 체크 사항으로 이미 대기/실행 중이면 그 작업을 그대로 돌려준다
+        for jid, v in _value_review_jobs.items():
+            if v['code'] == code and v['check'] == value_check and v['status'] in ('queued', 'running'):
+                return jsonify({'job_id': jid, 'status': v['status'], 'reused': True})
+        job_id = uuid.uuid4().hex[:12]
+        _value_review_jobs[job_id] = {'code': code, 'check': value_check, 'status': 'queued',
+                                      'result': None, 'error': '', 'created': now}
+        queued_ahead = sum(1 for v in _value_review_jobs.values() if v['status'] in ('queued', 'running')) - 1
+    _value_review_executor.submit(_run_value_review_job, job_id, code, name, original, value_check)
+    print(f"[가치검토] {code} 작업 등록 job={job_id} (앞선 작업 {queued_ahead}건)")
+    return jsonify({'job_id': job_id, 'status': 'queued', 'queued_ahead': queued_ahead})
+
+
+@app.route('/api/invest-mng/value-review/<job_id>')
+def invest_mng_value_review_status(job_id):
+    with _value_review_lock:
+        job = _value_review_jobs.get(job_id)
+        if not job:
+            return jsonify({'error': '작업을 찾을 수 없습니다(서버 재시작 또는 만료).'}), 404
+        job = dict(job)
+    ref = job.get('started') or job['created']
+    end = job.get('finished') or time.time()
+    return jsonify({
+        'job_id': job_id, 'code': job['code'], 'status': job['status'],
+        'elapsed_sec': int(end - ref), 'result': job['result'], 'error': job['error'],
+    })
 
 
 @app.route('/api/import-csv', methods=['POST'])
