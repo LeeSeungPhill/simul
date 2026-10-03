@@ -900,6 +900,15 @@ def _import_mvp_graph():
     return mvp_graph
 
 
+def _import_invest_mng_sync():
+    """invest_mng_sync 모듈 지연 import — weekly_batch.py와 공용인 '분석 후 invest_mng
+    반영' 로직(update_invest_mng)."""
+    if _INVEST_POINT_DIR not in sys.path:
+        sys.path.insert(0, _INVEST_POINT_DIR)
+    import invest_mng_sync
+    return invest_mng_sync
+
+
 def _import_value_check_review():
     """value_check_review 모듈 지연 import(가치주 체크 사항 반영 검토 — Ollama 호출)."""
     if _INVEST_POINT_DIR not in sys.path:
@@ -981,9 +990,20 @@ def _get_invest_point_fields(code):
         except Exception as e:
             return {'error': f'투자분석 모듈 로드 실패: {e}'}
         try:
-            mvp_graph.run(code)
+            result = mvp_graph.run(code) or {}
         except Exception as e:
             return {'error': f'투자 분석 실행 오류: {e}'}
+        # weekly_batch.py와 동일하게, 분석이 끝났으면(LLM 실패가 아니면) 최신 이력을
+        # invest_mng(proc_yn='Y')에 반영한다. 투자관리에 없는 종목이면 갱신 대상 행이
+        # 없어 아무것도 바뀌지 않는다. 반영 실패는 분석 결과 조회와 분리해 로그만 남긴다.
+        if not result.get('llm_error'):
+            try:
+                if _import_invest_mng_sync().update_invest_mng(code):
+                    print(f"[투자관리] {code} 재분석 결과 invest_mng 갱신 완료")
+            except Exception as e:
+                print(f"[투자관리] {code} invest_mng 갱신 실패: {e}")
+        else:
+            print(f"[투자관리] {code} LLM 호출 에러로 invest_mng 갱신 생략: {result.get('llm_error')}")
         try:
             rows = analysis_history.get_recent(code, limit=1)
         except Exception as e:
@@ -1157,6 +1177,10 @@ def invest_mng_info():
     if not code or not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
 
+    # 분석 이력이 오래돼 재분석하면 _get_invest_point_fields가 invest_mng도 갱신하므로
+    # (weekly_batch.py와 동일) 먼저 실행한 뒤 invest_mng를 읽어야 갱신된 값이 내려간다.
+    invest_point_data = _get_invest_point_fields(code)
+
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -1191,8 +1215,6 @@ def invest_mng_info():
         market_meta = _get_market_meta(code)
     except Exception as e:
         market_meta_error = str(e)
-
-    invest_point_data = _get_invest_point_fields(code)
 
     return jsonify({
         'code': code,
