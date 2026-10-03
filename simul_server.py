@@ -1340,9 +1340,11 @@ def invest_mng_value_review_start():
         for jid in [j for j, v in _value_review_jobs.items()
                     if v.get('finished') and now - v['finished'] > _VALUE_REVIEW_JOB_TTL]:
             _value_review_jobs.pop(jid, None)
-        # 같은 종목·같은 체크 사항으로 이미 대기/실행 중이면 그 작업을 그대로 돌려준다
+        # 같은 종목·같은 체크 사항으로 대기/실행 중이거나 이미 완료된(보관 중) 작업이 있으면
+        # 그 작업을 돌려준다 — 화면에서 확인을 중지했다가 다시 눌러도 Ollama를 다시 돌리지
+        # 않고 진행 중인 작업을 이어 보거나 완료 결과를 바로 받는다. 실패한 작업은 재사용 안 함.
         for jid, v in _value_review_jobs.items():
-            if v['code'] == code and v['check'] == value_check and v['status'] in ('queued', 'running'):
+            if v['code'] == code and v['check'] == value_check and v['status'] in ('queued', 'running', 'done'):
                 return jsonify({'job_id': jid, 'status': v['status'], 'reused': True})
         job_id = uuid.uuid4().hex[:12]
         _value_review_jobs[job_id] = {'code': code, 'check': value_check, 'status': 'queued',
@@ -1362,10 +1364,12 @@ def invest_mng_value_review_status(job_id):
         job = dict(job)
     ref = job.get('started') or job['created']
     end = job.get('finished') or time.time()
-    return jsonify({
+    resp = jsonify({
         'job_id': job_id, 'code': job['code'], 'status': job['status'],
         'elapsed_sec': int(end - ref), 'result': job['result'], 'error': job['error'],
     })
+    resp.headers['Cache-Control'] = 'no-store'   # 폴링 응답이 캐시되면 진행 상태가 갱신되지 않는다
+    return resp
 
 
 @app.route('/api/import-csv', methods=['POST'])

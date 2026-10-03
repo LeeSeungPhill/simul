@@ -784,11 +784,16 @@
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <button type="button" class="btn-review" @click="startValueReview"
                   :disabled="!investMng.value_check || valueReview.running">🔍 체크사항 반영 검토 (AI)</button>
-          <span v-if="valueReview.running" class="invest-mng-hint" style="margin:0">
-            {{ valueReview.status === 'queued' ? '대기 중' : '분석 중' }}... {{ valueReview.elapsed }}초
-            (리포트·뉴스 수집 후 Ollama 분석, 보통 1~3분)
-          </span>
+          <template v-if="valueReview.running">
+            <span class="invest-mng-hint" style="margin:0">
+              {{ valueReview.status === 'queued' ? '대기 중' : '분석 중' }}... {{ valueReview.elapsed }}초
+              (리포트·뉴스 수집 후 Ollama 분석, 보통 1~3분)
+              <span v-if="valueReview.fails" style="color:#c56a00"> · 상태 확인 재시도 {{ valueReview.fails }}회</span>
+            </span>
+            <button type="button" class="btn-review secondary" @click="stopValueReview">중지</button>
+          </template>
           <span v-else-if="valueReview.error" class="invest-mng-error" style="margin:0">⚠️ {{ valueReview.error }}</span>
+          <span v-else-if="valueReview.notice" class="invest-mng-hint" style="margin:0">{{ valueReview.notice }}</span>
           <span v-else-if="!investMng.value_check" class="invest-mng-hint" style="margin:0">
             가치주 체크 사항을 입력하면 최근 리포트·관련 뉴스와 대조해 검토합니다.
           </span>
@@ -2278,7 +2283,10 @@ createApp({
 
     // ── 가치주 체크 사항 반영 검토(AI) — 백그라운드 작업 등록 후 3초 간격 폴링 ──
     const _emptyValueReview = () => ({ running: false, jobId: '', status: '', elapsed: 0,
-                                       result: null, error: '', draft: '', check: '' });
+                                       result: null, error: '', notice: '', draft: '', check: '',
+                                       fails: 0, startedAt: 0 });
+    const VALUE_REVIEW_MAX_FAILS   = 5;                 // 진행 상태 조회 연속 실패 허용 횟수
+    const VALUE_REVIEW_MAX_WAIT_MS = 20 * 60 * 1000;    // 이 시간이 지나면 화면 쪽 확인을 멈춘다
     const valueReview = ref(_emptyValueReview());
     let valueReviewTimer = null;
     // 검토 결과를 받은 뒤 체크 사항을 고치면, 그 결과는 이전 체크 사항 기준이라 반영을 막는다
@@ -2295,7 +2303,7 @@ createApp({
       const check = (investMng.value.value_check || '').trim();
       if (!investMng.value.code || !check) return;
       resetValueReview();
-      Object.assign(valueReview.value, { running: true, status: 'queued', check });
+      Object.assign(valueReview.value, { running: true, status: 'queued', check, startedAt: Date.now() });
       try {
         const res  = await fetch('/api/invest-mng/value-review', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2310,23 +2318,51 @@ createApp({
       }
     }
 
+    // 폴링을 끝내고 '분석 중' 표시를 내린다. jobId를 비워 이미 보낸 요청의 응답도 버린다.
+    function _endValueReviewPolling(fields) {
+      if (valueReviewTimer) clearTimeout(valueReviewTimer);
+      valueReviewTimer = null;
+      Object.assign(valueReview.value, { running: false, jobId: '' }, fields);
+    }
+
+    // 사용자가 [중지]를 누른 경우 — 서버 작업은 계속 돌고, 같은 체크 사항으로 다시 누르면
+    // 서버가 진행 중 작업(또는 완료 결과)을 그대로 돌려줘 Ollama를 다시 돌리지 않는다.
+    function stopValueReview() {
+      _endValueReviewPolling({ notice: '확인을 중지했습니다. 서버 분석은 계속 진행되며, 같은 체크 사항으로 다시 누르면 진행 상황이나 완료된 결과를 바로 불러옵니다.' });
+    }
+
     async function pollValueReview(jobId) {
-      if (valueReview.value.jobId !== jobId) return;   // 다른 종목 선택 등으로 초기화됨
+      if (valueReview.value.jobId !== jobId) return;   // 중지·다른 종목 선택 등으로 초기화됨
+      if (Date.now() - valueReview.value.startedAt > VALUE_REVIEW_MAX_WAIT_MS) {
+        _endValueReviewPolling({ error: '20분이 지나도 완료되지 않아 확인을 멈췄습니다. 같은 체크 사항으로 다시 누르면 서버 결과를 이어서 확인합니다.' });
+        return;
+      }
       try {
-        const res  = await fetch(`/api/invest-mng/value-review/${jobId}`);
-        const data = await res.json();
+        const res = await fetch(`/api/invest-mng/value-review/${jobId}`, { cache: 'no-store' });
+        let data;
+        try { data = await res.json(); }
+        catch (e) { throw new Error(`응답을 해석할 수 없습니다 (HTTP ${res.status})`); }
         if (valueReview.value.jobId !== jobId) return;
-        if (!res.ok) { Object.assign(valueReview.value, { running: false, error: data.error || '진행 상태 조회 오류' }); return; }
-        Object.assign(valueReview.value, { status: data.status, elapsed: data.elapsed_sec });
+        if (!res.ok) { _endValueReviewPolling({ error: data.error || `진행 상태 조회 오류 (HTTP ${res.status})` }); return; }
+        Object.assign(valueReview.value, { status: data.status, elapsed: data.elapsed_sec, fails: 0 });
         if (data.status === 'done') {
-          Object.assign(valueReview.value, { running: false, result: data.result, draft: data.result.review });
+          _endValueReviewPolling({ result: data.result, draft: data.result.review });
           return;
         }
         if (data.status === 'error') {
-          Object.assign(valueReview.value, { running: false, error: data.error || '검토 실패' });
+          _endValueReviewPolling({ error: data.error || '검토 실패' });
           return;
         }
-      } catch (e) { /* 일시적 연결 오류는 다음 폴링에서 재시도 */ }
+      } catch (e) {
+        // 예전에는 여기서 조용히 무한 재시도해 '분석 중'에 멈춘 것처럼 보였다 —
+        // 연속 실패가 쌓이면 멈추고 원인을 보여준다.
+        if (valueReview.value.jobId !== jobId) return;
+        valueReview.value.fails += 1;
+        if (valueReview.value.fails >= VALUE_REVIEW_MAX_FAILS) {
+          _endValueReviewPolling({ error: `진행 상태 확인 실패(연속 ${VALUE_REVIEW_MAX_FAILS}회): ${e.message}` });
+          return;
+        }
+      }
       valueReviewTimer = setTimeout(() => pollValueReview(jobId), 3000);
     }
 
@@ -3133,7 +3169,7 @@ createApp({
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,
-      valueReview, valueReviewStale, startValueReview, acceptValueReview, resetValueReview, reviewStatusLabel,
+      valueReview, valueReviewStale, startValueReview, stopValueReview, acceptValueReview, resetValueReview, reviewStatusLabel,
       investMngGridEl, investMngListLoading, loadInvestMngList, investMngTotalCount,
       investMngFilterText, onInvestMngFilter,
       stockSearchGridEl, stockSearchLoading, stockSearchDate, loadStockSearchList, stockSearchTotalCount,
