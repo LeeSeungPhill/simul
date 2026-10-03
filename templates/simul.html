@@ -693,6 +693,7 @@
           <span v-if="investMngLookingUp" style="color:#aaa;margin-left:6px">조회/분석 중... (신규 종목은 수 분 소요될 수 있습니다)</span>
           <span v-else-if="investMng.report_dt && !investMngFromCache" style="color:#2dc653;margin-left:6px">신규 분석 완료</span>
           <span v-if="!investMngLookingUp && investMngStale" style="color:#f4a261;margin-left:6px">⚠ {{ investMngStaleDays }}일 전 분석된 오래된 정보입니다</span>
+          <span v-if="!investMngLookingUp && investMng.analysis_queued" style="color:#4361ee;margin-left:6px">· 백그라운드 재분석 등록됨 (완료 시 투자관리 정보 자동 갱신, 다시 조회하면 반영)</span>
           <span v-if="investMng.exclude" style="color:#e63946;margin-left:6px">투자 관리 제외 대상으로 표시됨</span>
         </div>
         <div v-if="investMngPointError" class="invest-mng-error">⚠️ {{ investMngPointError }}</div>
@@ -2279,6 +2280,7 @@ createApp({
       investMng.value.check_dt           = row.check_dt ?? '';
       investMng.value.exclude            = row.proc_yn === 'N';
       investMng.value.run_at             = '';
+      investMng.value.analysis_queued    = false;
     }
 
     // ── 가치주 체크 사항 반영 검토(AI) — 백그라운드 작업 등록 후 3초 간격 폴링 ──
@@ -2761,6 +2763,7 @@ createApp({
           investMng.value.value_check_eligible = false;   // 〃 → 가치주 체크 사항 입력도 안전하게 비활성화
           investMng.value.value_invest = '';               // 가치투자 검토도 analysis_history 조회분이라 함께 비표시
           investMng.value.run_at       = '';
+          investMng.value.analysis_queued = false;
         } else {
           investMngFromCache.value     = !!ip.from_cache;
           if (investMng.value.price == null) investMng.value.price = ip.price ?? null;
@@ -2775,6 +2778,7 @@ createApp({
           investMng.value.value_check_eligible = !!ip.value_check_eligible;
           investMng.value.value_invest = ip.value_invest || '';
           investMng.value.run_at       = ip.run_at || '';
+          investMng.value.analysis_queued = !!ip.analysis_queued;
           if (!investMng.value.name && ip.corp_name) investMng.value.name = ip.corp_name;
         }
       } catch (e) {

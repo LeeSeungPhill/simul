@@ -983,12 +983,23 @@ def _get_invest_point_fields(code):
                 pass
 
     from_cache = True
+    analysis_queued = False
+    mvp_graph = None
     if needs_run:
-        from_cache = False
         try:
             mvp_graph = _import_mvp_graph()
         except Exception as e:
-            return {'error': f'투자분석 모듈 로드 실패: {e}'}
+            # 서버 Python 환경에 langgraph/langchain 등이 없으면 여기서 실패한다(실측:
+            # 운영 서버 환경에 langchain_ollama 없음). 예전에는 오류로 끝나 재분석도
+            # invest_mng 갱신도 일어나지 않았다 — 분석 환경이 갖춰진 백그라운드 대기열
+            # (run_invest_point.sh)로 넘기고, 완료 시 워커가 invest_mng를 갱신한다.
+            _enqueue_invest_analysis(code)
+            analysis_queued = True
+            print(f"[투자관리] {code} 서버 내 mvp_graph 사용 불가({e}) - 백그라운드 분석으로 전환")
+            if not rows:
+                return {'error': '분석 이력이 없어 백그라운드 분석을 등록했습니다. 완료(보통 수 분) 후 다시 조회하세요.'}
+    if mvp_graph is not None:
+        from_cache = False
         try:
             result = mvp_graph.run(code) or {}
         except Exception as e:
@@ -1058,6 +1069,7 @@ def _get_invest_point_fields(code):
         'invest_risk':   parsed['invest_risk'],
         'run_at':        str(row.get('run_at') or ''),
         'from_cache':    from_cache,
+        'analysis_queued': analysis_queued,       # 서버 내 재분석 불가 → 백그라운드 재분석 등록됨
     }
 
 def _num_or_none(v):
@@ -2705,6 +2717,31 @@ def _enqueue_invest_analysis(code: str):
     print(f"[투자분석] {code} 백그라운드 분석 대기열 등록")
 
 
+def _sync_invest_mng_after_analysis(code: str, started: datetime, stdout: bytes) -> None:
+    """백그라운드 분석(run_invest_point.sh — 원격 SSH 또는 로컬 프로세스) 완료 후
+    weekly_batch.py와 같은 규칙으로 invest_mng를 갱신한다. 분석은 다른 프로세스에서
+    돌아 결과 dict를 받을 수 없으므로 weekly_batch의 '완료 + LLM 에러 아님' 조건을
+      - 출력에 mvp_graph의 'LLM 호출 에러' 표시가 없고
+      - analysis_history에 이번 실행 시각 이후 이력이 새로 저장됐는지
+    로 대신 판정한다(분석이 실제로 저장되지 않았는데 예전 이력으로 갱신하는 것 방지).
+    투자관리에 없는 종목이면 갱신 대상 행이 없어 아무것도 바뀌지 않는다."""
+    out = (stdout or b'').decode('utf-8', errors='replace')
+    if 'LLM 호출 에러' in out:
+        print(f"[투자관리] {code} LLM 호출 에러로 invest_mng 갱신 생략")
+        return
+    try:
+        rows = _import_analysis_history().get_recent(code, limit=1)
+        run_at = rows[0].get('run_at') if rows else None
+        # 원격 서버와의 시계 차이를 감안해 10분 여유
+        if not isinstance(run_at, datetime) or run_at < started - timedelta(minutes=10):
+            print(f"[투자관리] {code} 새 분석 이력이 없어 invest_mng 갱신 생략(최근 run_at={run_at})")
+            return
+        if _import_invest_mng_sync().update_invest_mng(code):
+            print(f"[투자관리] {code} 분석 결과 invest_mng 갱신 완료")
+    except Exception as e:
+        print(f"[투자관리] {code} invest_mng 갱신 실패: {e}")
+
+
 def _invest_analysis_worker():
     """전용 워커 스레드 1개 — 대기열에서 하나씩 꺼내 mvp_graph.py를 순차 실행.
     동시 실행을 막아 로컬 LLM(Ollama) 부하를 피하고, 조회 순서(입력 순서)를 보장한다."""
@@ -2714,6 +2751,7 @@ def _invest_analysis_worker():
             _invest_analysis_queued_at.pop(code, None)
             _invest_analysis_current['code'] = code
             _invest_analysis_current['started_at'] = datetime.now()
+        started = datetime.now()
         try:
             print(f"[투자분석] {code} mvp_graph 실행 시작")
             if _INVEST_POINT_SSH_HOST:
@@ -2733,6 +2771,7 @@ def _invest_analysis_worker():
                 _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'rc={result.returncode}: {err[-300:]}'}
             else:
                 print(f"[투자분석] {code} 실행 완료 - 다음 조회부터 반영")
+                _sync_invest_mng_after_analysis(code, started, result.stdout)
         except subprocess.TimeoutExpired:
             print(f"[투자분석] {code} 실행 시간 초과 ({_INVEST_ANALYSIS_TIMEOUT}초)")
             _invest_analysis_last_error[code] = {'at': datetime.now(), 'msg': f'{_INVEST_ANALYSIS_TIMEOUT}초 시간 초과'}
