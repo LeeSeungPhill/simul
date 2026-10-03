@@ -1095,7 +1095,8 @@ def invest_mng_list():
                    sales_amt, ep_sales_amt, report_dt,
                    dividend_rate, sales_rate,
                    value_check, dividend_check, growth_check, check_dt, proc_yn, down_range, up_range,
-                   value_review
+                   value_review,
+                   (value_invest IS NOT NULL AND btrim(value_invest) <> '') AS has_mng_value_invest
             FROM public.invest_mng WHERE proc_yn = 'Y' ORDER BY code
         """)
         rows = cur.fetchall()
@@ -1117,7 +1118,7 @@ def invest_mng_list():
         (code, name, main_business, high_price, market, size, industry, mktcap,
          sales_amt, ep_sales_amt, report_dt,
          dividend_rate, sales_rate, value_check, dividend_check, growth_check,
-         check_dt, proc_yn, down_range, up_range, value_review) = r
+         check_dt, proc_yn, down_range, up_range, value_review, has_mng_value_invest) = r
 
         price = None
         if ac:
@@ -1171,6 +1172,9 @@ def invest_mng_list():
             'check_dt': check_dt, 'proc_yn': proc_yn, 'down_range': down_range, 'up_range': up_range,
             'value_invest': value_invest, 'value_check_eligible': value_check_eligible,
             'value_review': value_review,
+            # 화면 표시용 value_invest(analysis_history 최신)와 별개로, invest_mng 테이블의
+            # value_invest 컬럼에 값이 있는지 — 투자관리 현황 '가치주 체크 사항' 필터용
+            'has_mng_value_invest': bool(has_mng_value_invest),
         }
 
     with ThreadPoolExecutor(max_workers=min(len(rows), 8)) as ex:
