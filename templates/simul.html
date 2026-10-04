@@ -2854,6 +2854,9 @@ createApp({
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '저장 오류'); return; }
         showAlert(data.message, data.excluded ? 'warn' : (data.inserted ? 'success' : 'warn'), 4000);
+        // 저장 결과(신규·변경·제외)를 투자관리 현황에 바로 반영. 목록은 종목별 현재가 조회로
+        // 수 초 걸리므로 기다리지 않는다(현황 상단에 '불러오는 중...' 표시, 필터·검색어는 유지).
+        loadInvestMngList();
       } catch (e) {
         showAlert('서버 연결 오류: ' + e.message);
       } finally {
