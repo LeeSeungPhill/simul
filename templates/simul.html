@@ -115,6 +115,16 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
 
     .btn-calc  { background: #4361ee; color: #fff; }
+    .btn-interest { background: #f4a261; color: #fff; }
+    .interest-head {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      font-size: .82rem; font-weight: 700; color: #1a1a2e;
+      border-top: 1.5px dashed #d0d4ff; padding-top: 10px; margin-top: 4px;
+    }
+    .interest-registered { font-size: .74rem; font-weight: 400; color: #2a9d8f; }
+    .interest-registered a { color: #4361ee; margin-left: 4px; }
+    .interest-registered a.interest-exclude { color: #e63946; }
+    .interest-registered a.disabled { pointer-events: none; opacity: .5; }
     .btn-reset { background: #f0f2f5; color: #555; }
 
     /* 미리보기 카드 */
@@ -1165,11 +1175,40 @@
         />
       </div>
 
+      <!-- 관심종목(interestItem_interest_item) — reservebot 신규 관심종목 등록과 같은 기본값, 수정 가능 -->
+      <template v-if="form.name && interestCode === form.code">
+        <div class="field full interest-head">
+          <span>⭐ 관심종목 가격</span>
+          <span v-if="interestLoading" class="invest-mng-hint" style="margin:0">기본값 조회 중...</span>
+          <span v-else-if="interestError" class="invest-mng-error" style="margin:0">⚠️ {{ interestError }}</span>
+          <span v-else class="invest-mng-hint" style="margin:0">금일·20일·1년 고가/저가 기본값 (수정 가능)</span>
+          <span v-if="interestRegistered" class="interest-registered">
+            관심종목 등록일시 {{ fmtDay(interestRegistered.interest_day) }} {{ fmtHms(interestRegistered.interest_dtm) }}
+            <a href="#" @click.prevent="loadRegisteredInterest">등록값 불러오기</a>
+            <a href="#" class="interest-exclude" :class="{ disabled: interestExcluding }"
+               @click.prevent="excludeInterest">{{ interestExcluding ? '제외 중...' : '관심종목 제외' }}</a>
+          </span>
+        </div>
+        <div class="field" v-for="f in INTEREST_FIELDS" :key="f.key">
+          <label>{{ f.label }} (원)</label>
+          <input
+            :value="fmtAmtInput(interestForm[f.key])"
+            @input="onAmtInput($event, interestForm, f.key)"
+            type="text"
+            inputmode="numeric"
+            :placeholder="f.hint"
+          />
+        </div>
+      </template>
+
     </div>
 
     <div class="btn-row">
       <button class="btn-reset" @click="resetForm">초기화</button>
       <button class="btn-calc" @click="calculate" :disabled="!canCalc">계산 / 미리보기</button>
+      <button class="btn-interest" @click="registerInterest" :disabled="!canRegisterInterest || interestSaving">
+        {{ interestSaving ? '등록 중...' : '관심종목 등록' }}
+      </button>
     </div>
   </div>
 
@@ -2685,6 +2724,112 @@ createApp({
       return 'badge-small';
     }
 
+    // ── 관심종목 등록 (매수 정보 입력) — reservebot 신규 관심종목 등록과 같은 기본값 ──
+    const INTEREST_FIELDS = [
+      { key: 'through_price',    label: '1차저항가',  hint: '금일 고가' },
+      { key: 'leave_price',      label: '1차지지가',  hint: '금일 저가' },
+      { key: 'resist_price',     label: '2차저항가',  hint: '20일 고가' },
+      { key: 'support_price',    label: '2차지지가',  hint: '20일 저가' },
+      { key: 'trend_high_price', label: '추세상한가', hint: '1년 고가' },
+      { key: 'trend_low_price',  label: '추세하한가', hint: '1년 저가' },
+    ];
+    const _emptyInterestForm = () => Object.fromEntries(INTEREST_FIELDS.map(f => [f.key, null]));
+    const interestForm       = ref(_emptyInterestForm());
+    const interestCode       = ref('');      // 기본값을 불러온 종목코드(다른 종목 값으로 등록 방지)
+    const interestRegistered = ref(null);    // 오늘 이미 등록된 값(있으면)
+    const interestLoading    = ref(false);
+    const interestSaving     = ref(false);
+    const interestError      = ref('');
+    let interestReqSeq = 0;                  // 빠르게 종목을 바꿀 때 늦게 온 이전 응답 무시
+
+    const canRegisterInterest = computed(() =>
+      !!form.value.code && !!form.value.name && interestCode.value === form.value.code &&
+      !interestLoading.value &&
+      INTEREST_FIELDS.every(f => Number(interestForm.value[f.key]) > 0));
+
+    function fmtHms(v) {
+      const s = String(v || '').padStart(6, '0');
+      return v ? `${s.slice(0, 2)}:${s.slice(2, 4)}:${s.slice(4, 6)}` : '';
+    }
+
+    function resetInterest() {
+      interestReqSeq++;
+      interestForm.value = _emptyInterestForm();
+      interestCode.value = '';
+      interestRegistered.value = null;
+      interestLoading.value = false;
+      interestError.value = '';
+    }
+
+    async function fetchInterestSuggest(code) {
+      resetInterest();
+      const seq = interestReqSeq;
+      interestCode.value = code;
+      interestLoading.value = true;
+      try {
+        const res  = await fetch(`/api/interest-item/suggest?code=${encodeURIComponent(code)}`);
+        const data = await res.json();
+        if (seq !== interestReqSeq) return;
+        if (!res.ok || data.error) { interestError.value = data.error || '관심종목 기본값 조회 오류'; return; }
+        interestForm.value       = { ..._emptyInterestForm(), ...data.suggest };
+        interestRegistered.value = data.registered;
+      } catch (e) {
+        if (seq === interestReqSeq) interestError.value = '서버 연결 오류: ' + e.message;
+      } finally {
+        if (seq === interestReqSeq) interestLoading.value = false;
+      }
+    }
+
+    const interestExcluding = ref(false);
+    async function excludeInterest() {
+      const code = form.value.code, name = form.value.name;
+      if (!code || interestExcluding.value) return;
+      if (!confirm(`[${name}] 관심종목에서 제외하시겠습니까?`)) return;
+      interestExcluding.value = true;
+      try {
+        const res  = await fetch('/api/interest-item/exclude', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '관심종목 제외 오류'); return; }
+        if (form.value.code === code) interestRegistered.value = null;   // '오늘 등록됨' 표시 제거
+        showAlert(data.message, data.updated ? 'success' : 'warn', 4000);
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        interestExcluding.value = false;
+      }
+    }
+
+    function loadRegisteredInterest() {
+      if (!interestRegistered.value) return;
+      INTEREST_FIELDS.forEach(f => { interestForm.value[f.key] = interestRegistered.value[f.key]; });
+    }
+
+    async function registerInterest() {
+      if (!canRegisterInterest.value) return;
+      interestSaving.value = true;
+      try {
+        const res  = await fetch('/api/interest-item', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: form.value.code, name: form.value.name, ...interestForm.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.error || '관심종목 등록 오류'); return; }
+        showAlert(data.message, 'success', 4000);
+        const now = new Date();
+        const p2 = (n) => String(n).padStart(2, '0');
+        interestRegistered.value = { ...interestForm.value,
+          interest_day: `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}`,
+          interest_dtm: `${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}` };
+      } catch (e) {
+        showAlert('서버 연결 오류: ' + e.message);
+      } finally {
+        interestSaving.value = false;
+      }
+    }
+
     async function lookupName() {
       const val = form.value.code.trim();
       if (!val) return;
@@ -2696,6 +2841,7 @@ createApp({
           const res  = await fetch(`/api/stock-name?code=${code}`);
           const data = await res.json();
           if (data.name) form.value.name = data.name;
+          if (interestCode.value !== code) fetchInterestSuggest(code);
           await fetchStockInfo(code, form.value.buy_date);
           fetchCompanyInfo(code, form.value.name);
           fetchStockScores(code);
@@ -2706,6 +2852,7 @@ createApp({
           if (data.code) {
             form.value.name = val;
             form.value.code = data.code;
+            if (interestCode.value !== data.code) fetchInterestSuggest(data.code);
             await fetchStockInfo(data.code, form.value.buy_date);
             fetchCompanyInfo(data.code, val);
             fetchStockScores(data.code);
@@ -3161,6 +3308,7 @@ createApp({
       companyLoading.value = false;
       bizExpanded.value    = false;
       alert.value.msg     = '';
+      resetInterest();
     }
 
     function fmt(n)     { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
@@ -3207,7 +3355,10 @@ createApp({
       loadActiveStocks, selectActiveStock,
       lookupSellName, calculateSell, executeSell,
       useLossAmt,
-      canCalc, lookupName, trailEditLookup, trailTpLabel, tradingPlanLabel,
+      canCalc, lookupName,
+      INTEREST_FIELDS, interestForm, interestCode, interestRegistered, interestLoading, interestSaving,
+      interestError, canRegisterInterest, fmtHms, loadRegisteredInterest, registerInterest,
+      interestExcluding, excludeInterest, trailEditLookup, trailTpLabel, tradingPlanLabel,
       sizeClass, fetchStockInfo, loadDashboard,
       calculate, save, loadList, deleteRecord, resetForm,
       runSet, runTrail, updateTrail, fmt, fmtDay,

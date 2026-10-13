@@ -664,7 +664,8 @@ def _get_api_account():
                 conn2.close()
         except Exception:
             pass
-    return {'app_key': app_key, 'app_secret': app_secret, 'access_token': access_token}
+    return {'app_key': app_key, 'app_secret': app_secret, 'access_token': access_token,
+            'acct_no': acct_no}
 
 
 def _kis_headers(ac, tr_id):
@@ -765,6 +766,176 @@ def _get_market_meta(code):
     else:                 size = '소형주'
 
     return {'market': market, 'size': size, 'industry': industry, 'mktcap': mktcap, 'price': price}
+
+
+# ── 관심종목(interestItem_interest_item) — 매수 정보 입력 화면에서 등록 ───────────
+# reservebot.py 신규 관심종목 등록(menuNum '05' → _do_interest_register)과 같은 기본값·
+# 저장 규칙을 쓴다. 등록 계좌는 시세 조회 계좌(phills2 = 시뮬 계좌 74346047).
+_INTEREST_FIELDS = ('through_price', 'leave_price', 'resist_price', 'support_price',
+                    'trend_high_price', 'trend_low_price')
+
+
+def _kis_period_high_low(ac, code, period='D', count=30):
+    """reservebot.get_period_high_low와 동일: KIS 일/주/월봉(FHKST01010400) 최근 count개
+    봉의 최고가·최저가. 조회 실패 시 (None, None)."""
+    try:
+        r = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            headers=_kis_headers(ac, "FHKST01010400"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                    "FID_PERIOD_DIV_CODE": period, "FID_ORG_ADJ_PRC": "1"},
+            verify=False, timeout=10
+        )
+        rows = (r.json().get('output') or [])[:count]
+        highs = [int(x['stck_hgpr']) for x in rows if x.get('stck_hgpr')]
+        lows  = [int(x['stck_lwpr']) for x in rows if x.get('stck_lwpr')]
+        if not highs or not lows:
+            return None, None
+        return max(highs), min(lows)
+    except Exception:
+        return None, None
+
+
+@app.route('/api/interest-item/suggest')
+def interest_item_suggest():
+    """관심종목 등록 기본값(reservebot 신규 등록과 동일):
+    1차저항가/1차지지가 = 금일 고가/저가, 2차저항가/2차지지가 = 20일 고가/저가,
+    추세상한가/추세하한가 = 1년(월봉 12개) 고가/저가. 오늘 이미 등록된 값이 있으면 함께 반환."""
+    code = request.args.get('code', '').strip().zfill(6)
+    if not _is_valid_stock_code(code):
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+    ac = _get_api_account()
+    if not ac:
+        return jsonify({'error': 'API 계좌 정보 없음'}), 500
+
+    out = _fetch_cur_price_out(ac, code)
+    if not out:
+        return jsonify({'error': '현재가(금일 고가/저가) 조회 실패'}), 502
+    d20_high, d20_low = _kis_period_high_low(ac, code, 'D', 20)
+    y1_high, y1_low   = _kis_period_high_low(ac, code, 'M', 12)
+    suggest = {
+        'through_price':    int(out.get('stck_hgpr') or 0),
+        'leave_price':      int(out.get('stck_lwpr') or 0),
+        'resist_price':     d20_high or 0,
+        'support_price':    d20_low or 0,
+        'trend_high_price': y1_high or 0,
+        'trend_low_price':  y1_low or 0,
+    }
+
+    registered = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT through_price, leave_price, resist_price, support_price,
+                   trend_high_price, trend_low_price, interest_day, interest_dtm
+            FROM public."interestItem_interest_item"
+            WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
+            ORDER BY last_chg_date DESC LIMIT 1
+        """, (int(ac['acct_no']), code))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            registered = dict(zip(_INTEREST_FIELDS, row[:6]))
+            registered['interest_day'] = row[6]
+            registered['interest_dtm'] = row[7]
+    except Exception as e:
+        print(f"[관심종목] {code} 등록 여부 조회 오류: {e}")
+
+    return jsonify({'code': code, 'acct_no': ac['acct_no'], 'suggest': suggest, 'registered': registered})
+
+
+@app.route('/api/interest-item', methods=['POST'])
+def interest_item_register():
+    """관심종목 등록 — reservebot._do_interest_register와 같은 규칙: 오늘(interest_day)
+    같은 계좌·종목의 proc_yn='Y' 행이 있으면 가격을 갱신하고, 없으면 새로 등록한다."""
+    data = request.get_json(force=True, silent=True) or {}
+    code = str(data.get('code', '')).strip().zfill(6)
+    name = str(data.get('name', '')).strip()
+    if not _is_valid_stock_code(code) or not name:
+        return jsonify({'error': '종목코드/종목명이 필요합니다.'}), 400
+    prices = {}
+    for f in _INTEREST_FIELDS:
+        v = _num_or_none(data.get(f))
+        if v is None or v <= 0:
+            return jsonify({'error': f'관심종목 가격을 모두 0보다 큰 값으로 입력하세요. ({f})'}), 400
+        prices[f] = int(v)
+
+    ac = _get_api_account()
+    if not ac or not ac.get('acct_no'):
+        return jsonify({'error': 'API 계좌 정보 없음'}), 500
+    acct_no = int(ac['acct_no'])
+    now = datetime.now()
+    interest_day, interest_dtm = now.strftime('%Y%m%d'), now.strftime('%H%M%S')
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE public."interestItem_interest_item"
+            SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
+                support_price = %s, trend_high_price = %s, trend_low_price = %s, last_chg_date = %s
+            WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
+        """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
+              prices['support_price'], prices['trend_high_price'], prices['trend_low_price'], now,
+              acct_no, code))
+        inserted = cur.rowcount == 0
+        if inserted:
+            cur.execute("""
+                INSERT INTO public."interestItem_interest_item"
+                    (acct_no, code, name, through_price, leave_price, resist_price, support_price,
+                     trend_high_price, trend_low_price, interest_day, interest_dtm, proc_yn, last_chg_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Y', %s)
+            """, (acct_no, code, name, prices['through_price'], prices['leave_price'],
+                  prices['resist_price'], prices['support_price'],
+                  prices['trend_high_price'], prices['trend_low_price'],
+                  interest_day, interest_dtm, now))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': f'관심종목 등록 오류: {e}'}), 500
+    finally:
+        conn.close()
+
+    msg = f"[{name}] 관심종목 {'등록' if inserted else '변경'} 완료 (계좌 {acct_no})"
+    print(f"[관심종목] {code} {msg}")
+    return jsonify({'message': msg, 'inserted': inserted, 'acct_no': acct_no})
+
+
+@app.route('/api/interest-item/exclude', methods=['POST'])
+def interest_item_exclude():
+    """관심종목 제외 — reservebot '관심제외'(interest_edit_field_ 관심제외)와 같은 규칙:
+    계좌 구분 없이 해당 종목의 전 영업일 이후 등록분(proc_yn='Y')을 proc_yn='N'으로 바꾼다."""
+    data = request.get_json(force=True, silent=True) or {}
+    code = str(data.get('code', '')).strip().zfill(6)
+    name = str(data.get('name', '')).strip() or code
+    if not _is_valid_stock_code(code):
+        return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE public."interestItem_interest_item"
+            SET proc_yn = 'N', last_chg_date = now()
+            WHERE code = %s AND proc_yn = 'Y'
+        """, (code,))
+        updated = cur.rowcount
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': f'관심종목 제외 오류: {e}'}), 500
+    finally:
+        conn.close()
+
+    if not updated:
+        return jsonify({'message': f'[{name}] 제외할 관심종목이 없습니다.', 'updated': 0})
+    msg = f'[{name}] 관심종목에서 제외되었습니다. ({updated}건)'
+    print(f"[관심종목] {code} {msg}")
+    return jsonify({'message': msg, 'updated': updated})
 
 
 @app.route('/api/stock-info')
