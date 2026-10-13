@@ -1183,7 +1183,7 @@
           <span v-else-if="interestError" class="invest-mng-error" style="margin:0">⚠️ {{ interestError }}</span>
           <span v-else class="invest-mng-hint" style="margin:0">금일·20일·1년 고가/저가 기본값 (수정 가능)</span>
           <span v-if="interestRegistered" class="interest-registered">
-            관심종목 등록일시 {{ fmtDay(interestRegistered.interest_day) }} {{ fmtHms(interestRegistered.interest_dtm) }}
+            {{ fmtDay(interestRegistered.interest_day) }} {{ fmtHms(interestRegistered.interest_dtm) }}
             <a href="#" @click.prevent="loadRegisteredInterest">등록값 불러오기</a>
             <a href="#" class="interest-exclude" :class="{ disabled: interestExcluding }"
                @click.prevent="excludeInterest">{{ interestExcluding ? '제외 중...' : '관심종목 제외' }}</a>
@@ -2818,11 +2818,9 @@ createApp({
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '관심종목 등록 오류'); return; }
         showAlert(data.message, 'success', 4000);
-        const now = new Date();
-        const p2 = (n) => String(n).padStart(2, '0');
-        interestRegistered.value = { ...interestForm.value,
-          interest_day: `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}`,
-          interest_dtm: `${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}` };
+        // 등록일시는 화면 시각이 아니라 서버가 돌려준 DB 값(interest_item_suggest의 registered와
+        // 같은 interest_day/interest_dtm) — 기존 행 변경이면 원래 등록일시가 유지된다.
+        interestRegistered.value = data.registered;
       } catch (e) {
         showAlert('서버 연결 오류: ' + e.message);
       } finally {

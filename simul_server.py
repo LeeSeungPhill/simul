@@ -848,8 +848,7 @@ def interest_item_suggest():
 
 @app.route('/api/interest-item', methods=['POST'])
 def interest_item_register():
-    """관심종목 등록 — reservebot._do_interest_register와 같은 규칙: 오늘(interest_day)
-    같은 계좌·종목의 proc_yn='Y' 행이 있으면 가격을 갱신하고, 없으면 새로 등록한다."""
+    """관심종목 등록 — reservebot._do_interest_register와 같은 규칙: 같은 계좌·종목의 proc_yn='Y' 행이 있으면 가격을 갱신하고, 없으면 새로 등록한다."""
     data = request.get_json(force=True, silent=True) or {}
     code = str(data.get('code', '')).strip().zfill(6)
     name = str(data.get('name', '')).strip()
@@ -877,10 +876,16 @@ def interest_item_register():
             SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
                 support_price = %s, trend_high_price = %s, trend_low_price = %s, last_chg_date = %s
             WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
+            RETURNING interest_day, interest_dtm
         """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
               prices['support_price'], prices['trend_high_price'], prices['trend_low_price'], now,
               acct_no, code))
-        inserted = cur.rowcount == 0
+        # 변경(UPDATE)이면 등록일시(interest_day/dtm)는 원래 값 그대로다 — 화면 '관심종목
+        # 등록일시'가 interest_item_suggest의 registered와 같은 값을 보이도록 실제 값을 돌려준다.
+        updated_rows = cur.fetchall()
+        inserted = not updated_rows
+        if updated_rows:
+            interest_day, interest_dtm = max(updated_rows, key=lambda r: (r[0] or '', r[1] or ''))
         if inserted:
             cur.execute("""
                 INSERT INTO public."interestItem_interest_item"
@@ -901,7 +906,8 @@ def interest_item_register():
 
     msg = f"[{name}] 관심종목 {'등록' if inserted else '변경'} 완료 (계좌 {acct_no})"
     print(f"[관심종목] {code} {msg}")
-    return jsonify({'message': msg, 'inserted': inserted, 'acct_no': acct_no})
+    return jsonify({'message': msg, 'inserted': inserted, 'acct_no': acct_no,
+                    'registered': {**prices, 'interest_day': interest_day, 'interest_dtm': interest_dtm}})
 
 
 @app.route('/api/interest-item/exclude', methods=['POST'])
