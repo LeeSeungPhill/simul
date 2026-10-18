@@ -875,11 +875,11 @@ def interest_item_register():
             UPDATE public."interestItem_interest_item"
             SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
                 support_price = %s, trend_high_price = %s, trend_low_price = %s, last_chg_date = %s
-            WHERE code = %s AND proc_yn = 'Y'
+            WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
             RETURNING interest_day, interest_dtm
         """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
               prices['support_price'], prices['trend_high_price'], prices['trend_low_price'], now,
-              code))
+              acct_no, code))
         # 변경(UPDATE)이면 등록일시(interest_day/dtm)는 원래 값 그대로다 — 화면 '관심종목
         # 등록일시'가 interest_item_suggest의 registered와 같은 값을 보이도록 실제 값을 돌려준다.
         updated_rows = cur.fetchall()
