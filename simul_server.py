@@ -875,11 +875,11 @@ def interest_item_register():
             UPDATE public."interestItem_interest_item"
             SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
                 support_price = %s, trend_high_price = %s, trend_low_price = %s, last_chg_date = %s
-            WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
+            WHERE code = %s AND proc_yn = 'Y'
             RETURNING interest_day, interest_dtm
         """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
               prices['support_price'], prices['trend_high_price'], prices['trend_low_price'], now,
-              acct_no, code))
+              code))
         # 변경(UPDATE)이면 등록일시(interest_day/dtm)는 원래 값 그대로다 — 화면 '관심종목
         # 등록일시'가 interest_item_suggest의 registered와 같은 값을 보이도록 실제 값을 돌려준다.
         updated_rows = cur.fetchall()
@@ -920,14 +920,19 @@ def interest_item_exclude():
     if not _is_valid_stock_code(code):
         return jsonify({'error': '유효한 종목코드가 필요합니다.'}), 400
 
+    ac = _get_api_account()
+    if not ac or not ac.get('acct_no'):
+        return jsonify({'error': 'API 계좌 정보 없음'}), 500
+    acct_no = int(ac['acct_no'])
+
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
             UPDATE public."interestItem_interest_item"
             SET proc_yn = 'N', last_chg_date = now()
-            WHERE code = %s AND proc_yn = 'Y'
-        """, (code,))
+            WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
+        """, (acct_no, code,))
         updated = cur.rowcount
         conn.commit()
         cur.close()
