@@ -1213,18 +1213,14 @@ def _get_invest_point_fields(code):
     # 않는다(전고점 대비 상승여력·배당 매력을 보여주는 게 오도의 소지가 있으므로).
     sales_grew_or_similar = _grew_or_similar(row.get('매출액-1'), row.get('매출액+1'))
 
-    # 배당율(dividend_rate): DPS-5~DPS-1(과거 5개년 실적)이 모두 존재하고 0보다 크며
-    # (한 해라도 누락되거나 무배당이면 제외), 매출액도 증가/유사 조건을 만족해야만
-    # 평균 DPS 대비 현재가 기준 배당율 산정.
-    dps_cols = ('DPS-5', 'DPS-4', 'DPS-3', 'DPS-2', 'DPS-1')
-    dps_vals = [row.get(c) for c in dps_cols]
-    dividend_rate = None
-    if all(v is not None and v > 0 for v in dps_vals) and price and sales_grew_or_similar:
-        try:
-            avg_dps = sum(float(v) for v in dps_vals) / len(dps_vals)
-            dividend_rate = round(avg_dps / float(price) * 100, 2)
-        except (TypeError, ZeroDivisionError):
-            dividend_rate = None
+    # 배당율(dividend_rate): 실효 DPS(TTM - 특별분, 5년 평균 대비 이상치 보정) / 현재가.
+    # 게이트(DPS-5~DPS-1 모두 존재·양수 + 매출 증가/유사)와 계산은 주간 배치와 같은
+    # 값이 나오도록 invest_mng_sync.compute_dividend_rate 한 곳에서 한다.
+    try:
+        dividend_rate = _import_invest_mng_sync().compute_dividend_rate(row)
+    except Exception as e:
+        print(f"[투자관리] {code} 배당율 계산 실패: {e}")
+        dividend_rate = None
 
     # 상승잔존율(remain_rate) 표시 가능 여부:
     #   - 상장 5년 이상 근사 판정: 매출액-5(5년 전 실적) 존재
@@ -1241,7 +1237,7 @@ def _get_invest_point_fields(code):
         'price':         price,
         'sales_amt':     row.get('매출액-1'),      # 금년(최근 실측) 매출액
         'ep_sales_amt':  row.get('매출액+1'),      # 내년(최근 추정) 매출액
-        'dividend_rate': dividend_rate,            # DPS-5~DPS-1 평균 배당금 / 현재가
+        'dividend_rate': dividend_rate,            # 실효 DPS(TTM 기반) / 현재가
         'remain_rate_eligible': remain_rate_eligible,
         'value_check_eligible': value_check_eligible,
         'value_invest':  row.get('value_invest'),  # 가치투자 검토(analysis_history 최신 이력 기준)

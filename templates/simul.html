@@ -54,6 +54,11 @@
       gap: 14px;
     }
     .form-grid .full { grid-column: 1 / -1; }
+    /* 투자 관리 입력: 배당율(좁게) + 배당 정보(나머지 폭)를 한 줄에 */
+    /* 투자 관리 입력: '배당율 (%) 값 · 배당 정보' 레이블 줄 */
+    .dividend-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+    .dividend-head label { display: inline; margin-bottom: 0; }
+    .dividend-head .dividend-rate-val { font-size: .85rem; font-weight: 700; color: #4361ee; margin-right: 14px; }
 
     .field label {
       display: block;
@@ -461,8 +466,7 @@
 
     @media (max-width: 500px) {
       .form-grid { grid-template-columns: 1fr; }
-      .form-grid .full { grid-column: 1; }
-    }
+      .form-grid .full { grid-column: 1; }    }
 
     /* 상단 제어 버튼 */
     .top-ctrl {
@@ -763,9 +767,13 @@
         <input :value="investMngSalesRate != null ? investMngSalesRate + '%' : ''" readonly
                :style="investMngSalesRate != null ? (investMngSalesRate >= 0 ? 'color:#2dc653' : 'color:#e63946') : ''" />
       </div>
-      <div class="field">
-        <label>배당율 (%)</label>
-        <input :value="investMng.dividend_rate != null ? investMng.dividend_rate + '%' : ''" readonly />
+      <!-- 배당율(레이블 옆에 값) · 배당 정보 레이블을 한 줄에, 그 아래 배당 정보 값 -->
+      <div class="field full">
+        <div class="dividend-head">
+          <label>배당 정보 (배당율)</label>
+          <span class="dividend-rate-val">{{ investMng.dividend_rate != null ? investMng.dividend_rate + '%' : '-' }}</span>
+        </div>
+        <textarea v-model.trim="investMng.dividend_check" rows="2" readonly placeholder="배당 정보 존재시 자동으로 채워집니다"></textarea>
       </div>
 
       <div class="field full">
@@ -859,11 +867,8 @@
         <label>가치투자 검토 (체크사항 반영본)</label>
         <textarea v-model="investMng.value_review" rows="8" readonly></textarea>
       </div>
+
       <!-- <div class="field full">
-        <label>배당주 체크 사항</label>
-        <textarea v-model.trim="investMng.dividend_check" rows="2" placeholder="배당주 관점 체크 사항을 입력하세요"></textarea>
-      </div>
-      <div class="field full">
         <label>성장주 체크 사항</label>
         <textarea v-model.trim="investMng.growth_check" rows="2" placeholder="성장주 관점 체크 사항을 입력하세요"></textarea>
       </div> -->
