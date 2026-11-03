@@ -39,14 +39,20 @@ _EXPORT_DIR  = os.path.join(_SCRIPT_DIR, 'simul_exports')
 SIMUL_TABLES = ['dly_trading_balance_simul', 'trading_trail_simul', 'dly_acct_balance_simul']
 
 # ── KRX 종목 목록 (reservebot.py 동일 방식) ─────────────────────────
-_krx_df      = None
-_krx_df_lock = _threading.Lock()
+_krx_df        = None
+_krx_loaded_at = 0.0
+_krx_df_lock   = _threading.Lock()
+_KRX_TTL_SEC        = 6 * 3600   # 서버를 켜 둔 뒤 상장된 종목도 잡히도록 주기적으로 다시 받는다
+_KRX_MISS_RELOAD_SEC = 600       # 조회 실패 시 강제 재로드는 10분에 1회까지
 
-def _load_krx() -> pd.DataFrame | None:
-    """KRX에서 전체 종목 목록 로드 (최초 1회, 이후 캐시 반환)."""
-    global _krx_df
+def _load_krx(force: bool = False) -> pd.DataFrame | None:
+    """KRX에서 전체 종목 목록 로드. _KRX_TTL_SEC가 지나면 다시 받고, force=True(조회
+    실패 — 오늘 상장 등)면 마지막 로드가 _KRX_MISS_RELOAD_SEC보다 오래됐을 때만 다시
+    받는다. 다시 받다가 실패하면 기존 목록을 그대로 쓴다."""
+    global _krx_df, _krx_loaded_at
     with _krx_df_lock:
-        if _krx_df is not None:
+        age = time.time() - _krx_loaded_at
+        if _krx_df is not None and age < (_KRX_MISS_RELOAD_SEC if force else _KRX_TTL_SEC):
             return _krx_df
     try:
         res = requests.get(
@@ -65,10 +71,12 @@ def _load_krx() -> pd.DataFrame | None:
         df = df[df['code'].str.match(r'^[0-9A-Za-z]{6}$')].reset_index(drop=True)
         with _krx_df_lock:
             _krx_df = df
+            _krx_loaded_at = time.time()
         return df
     except Exception as e:
         print(f"[KRX] 종목목록 로드 오류: {e}")
-        return None
+        with _krx_df_lock:
+            return _krx_df
 
 
 def _run_script(script_name: str, args: list, timeout: int = 120):
@@ -113,6 +121,9 @@ def stock_name():
     if df is None:
         return jsonify({'name': '', 'error': 'KRX 종목목록 로드 실패'})
     rows = df[df['code'] == code]
+    if rows.empty:  # 서버 기동 이후 신규상장 — 목록을 한 번 다시 받아 재시도
+        df = _load_krx(force=True)
+        rows = df[df['code'] == code] if df is not None else rows
     return jsonify({'name': rows.iloc[0]['company'].strip() if not rows.empty else ''})
 
 
@@ -128,6 +139,12 @@ def stock_code():
     rows = df[df['company'] == name]
     if rows.empty:
         rows = df[df['company'].str.startswith(name, na=False)]
+    if rows.empty:  # 서버 기동 이후 신규상장 — 목록을 한 번 다시 받아 재시도
+        df = _load_krx(force=True)
+        if df is not None:
+            rows = df[df['company'] == name]
+            if rows.empty:
+                rows = df[df['company'].str.startswith(name, na=False)]
     return jsonify({'code': rows.iloc[0]['code'].strip() if not rows.empty else ''})
 
 
