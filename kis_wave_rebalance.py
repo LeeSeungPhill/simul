@@ -20,7 +20,7 @@ kis_market_ratio_rebalance.py
 
 정책 결정 (합의)
   - 우선 '일 단위(horizon='D')'만 처리.
-  - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
+  - 'h'(보류/헤지), 'e'(정리) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
 
 주의
   - kis_holding_item_total.py 는 import 시 배치가 자동 실행되므로 import 하지 않고
@@ -497,7 +497,7 @@ def load_fund_signals(conn, acct_no):
                 FROM "stockBalance_stock_balance"
 	            WHERE acct_no = %s
 	            AND proc_yn = 'Y'
-	            AND (trading_plan = 'h' OR trading_plan IS NULL)
+	            AND (trading_plan <> 'i' OR trading_plan IS NULL)
 	            AND COALESCE(eval_sum, 0) > 0) AS total_eval
         FROM "stockFundMng_stock_fund_mng" WHERE acct_no = %s
     """, (str(acct_no),str(acct_no),))
@@ -515,7 +515,7 @@ def load_fund_signals(conn, acct_no):
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
-    """trading_plan == 'h' OR trading_plan IS NULL 대상"""
+    """trading_plan <> 'i' OR trading_plan IS NULL 대상"""
     cur = conn.cursor()
     cur.execute("""
         SELECT 
@@ -528,7 +528,7 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
         FROM "stockBalance_stock_balance" A 
         WHERE acct_no = %s 
         AND proc_yn = 'Y'
-        AND (trading_plan = 'h' OR trading_plan IS NULL)
+        AND (trading_plan <> 'i' OR trading_plan IS NULL)
         AND COALESCE(eval_sum, 0) > 0
     """, (str(acct_no),))
     rows = cur.fetchall()
@@ -816,7 +816,7 @@ def process_account(nick):
 
         # 트레이딩 현금, 시장비율, 트레이딩 평가금액
         trading_cash, _sig, mr, total_eval = load_fund_signals(conn, acct_no)
-        # 잔고정보의 trading_plan == 'h' OR trading_plan IS NULL 대상 전일저가 이탈 종목
+        # 잔고정보의 trading_plan <> 'i' OR trading_plan IS NULL 대상 전일저가 이탈 종목
         holdings = load_holdings(conn, acct_no, access_token, app_key, app_secret)
         transfer_cash_need = total_excess(trading_cash, total_eval, mr)
         filtered_tot_evlu = trading_cash + total_eval

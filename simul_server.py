@@ -593,7 +593,7 @@ def update_trail():
     if basic_qty    is not None: sets.append("basic_qty    = %s"); params.append(basic_qty)
     if trail_tp:                 sets.append("trail_tp     = %s"); params.append(trail_tp)
 
-    # 매매계획(trading_plan): 홀딩='h'/투자='i'/빈값=None — 프론트가 항상 현재값을 채워
+    # 매매계획(trading_plan): 홀딩='h'/정리='e'/투자='i'/빈값=None — 프론트가 항상 현재값을 채워
     # 보내므로(선택 안 해도 기존값 재전송) 값 유무와 무관하게 키 존재 여부로만 판단한다.
     if 'trading_plan' in data:
         trading_plan = None if str(data.get('trading_plan')) == 'n' else str(data.get('trading_plan') or '').strip() or None

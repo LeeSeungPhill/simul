@@ -18,12 +18,6 @@ kis_market_ratio_rebalance.py
   낮은 종목부터 우선 매도. KOSPI/KOSDAQ 시장 구분 없이 보유종목 전체를 단일 우선순위로 배분.
   invest_point 성장/가치 점수(quality)는 참고용으로 계산·표시만 하고 매도 우선순위 산정에서는 제외.
 
-정책 결정 (합의)
-  - 우선 '일 단위(horizon='D')'만 처리.
-  - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
-    (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
-     두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
-
 주의
   - kis_holding_item_total.py 는 import 시 배치가 자동 실행되므로 import 하지 않고
     필요한 KIS 함수를 이 파일에 복제한다.

@@ -20,9 +20,7 @@ kis_market_ratio_rebalance.py
 
 정책 결정 (합의)
   - 우선 '일 단위(horizon='D')'만 처리.
-  - 'h'(보류/헤지) 종목도 매도 대상에 포함 → base/트레이딩풀 모두 NOT IN ('i') 기준.
-    (기존 kis_holding_item_total 의 현금확보 로직은 NOT IN ('i','h') base 를 쓰므로
-     두 메커니즘의 base 정의가 다름에 유의 — 의도된 차이)
+  - 'h'(보류/헤지), 'e'(정리) 종목도 매도 대상에 포함 
 
 주의
   - kis_holding_item_total.py 는 import 시 배치가 자동 실행되므로 import 하지 않고
@@ -517,7 +515,7 @@ def load_fund_signals(conn, acct_no):
 
 
 def load_holdings(conn, acct_no, access_token, app_key, app_secret):
-    """trading_plan == 'h' 대상"""
+    """trading_plan IN ('h', 'e') 대상"""
     cur = conn.cursor()
     cur.execute("""
         SELECT 
@@ -530,7 +528,7 @@ def load_holdings(conn, acct_no, access_token, app_key, app_secret):
         FROM "stockBalance_stock_balance" A 
         WHERE acct_no = %s 
         AND proc_yn = 'Y'
-        AND trading_plan = 'h'
+        AND trading_plan IN ('h', 'e')
         AND COALESCE(eval_sum, 0) > 0
     """, (str(acct_no),))
     rows = cur.fetchall()
@@ -794,7 +792,7 @@ def simulate_rebalance(sim_date, horizon="D", strength_mode="neutral",
                 SELECT code, name
                 FROM  public.trading_trail_simul
                 WHERE acct_no = %s
-                AND trading_plan = 'h'
+                AND trading_plan IN ('h', 'e')
                 AND COALESCE(basic_qty, 0) > 0
                 AND trail_day = %s
             ) B 

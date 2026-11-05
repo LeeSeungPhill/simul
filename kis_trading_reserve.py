@@ -357,7 +357,7 @@ def register_missing_reserves(nick, ac, conn):
     cur.execute("""
         SELECT code, name, reserve_price, reserve_qty, reserve_date
         FROM "stockBalance_stock_balance"
-        WHERE acct_no = %s AND proc_yn = 'Y'
+        WHERE acct_no = %s AND proc_yn = 'Y' AND COALESCE(eval_sum, 0) > 0
           AND reserve_price IS NOT NULL
           AND reserve_qty IS NOT NULL
           AND reserve_date IS NOT NULL
