@@ -1458,6 +1458,16 @@ def invest_mng_info():
             FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' ORDER BY check_dt DESC NULLS LAST LIMIT 1
         """, (code,))
         row = cur.fetchone()
+        # 주요사업이 invest_mng에 없을 때 쓸 관심종목(proc_yn='Y') 주요사업(가장 최근 변경분)
+        interest_main_business = ''
+        if not (row and (row[2] or '').strip()):
+            cur.execute("""
+                SELECT main_business FROM public."interestItem_interest_item"
+                WHERE code = %s AND proc_yn = 'Y' AND COALESCE(TRIM(main_business), '') <> ''
+                ORDER BY last_chg_date DESC NULLS LAST LIMIT 1
+            """, (code,))
+            irow = cur.fetchone()
+            interest_main_business = irow[0] if irow else ''
         cur.close()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1485,6 +1495,7 @@ def invest_mng_info():
     return jsonify({
         'code': code,
         'existing': existing,
+        'interest_main_business': interest_main_business,
         'market_meta': market_meta,
         'market_meta_error': market_meta_error,
         'invest_point': invest_point_data,

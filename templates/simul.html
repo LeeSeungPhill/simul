@@ -2961,7 +2961,9 @@ createApp({
         if (data.error) { investMngPointError.value = data.error; return; }
 
         const ex = data.existing || {};
-        investMng.value.main_business  = ex.main_business ?? '';
+        // 투자관리 주요사업이 없으면 관심종목(proc_yn='Y')에 저장된 주요사업으로 채움
+        investMng.value.main_business  = (ex.main_business || '').trim() ? ex.main_business
+                                         : (data.interest_main_business || '');
         investMng.value.down_range     = ex.down_range ?? null;
         investMng.value.up_range       = ex.up_range ?? null;
         investMng.value.high_price     = ex.high_price ?? null;
