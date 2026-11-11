@@ -128,6 +128,34 @@
     }
     .interest-registered { font-size: .74rem; font-weight: 400; color: #2a9d8f; }
     .interest-registered a { color: #4361ee; margin-left: 4px; }
+
+    /* 관심유형 다중 선택 콤보박스 */
+    .watch-combo { position: relative; outline: none; }
+    .watch-combo-btn {
+      width: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; text-align: left;
+      padding: 7px 30px 7px 10px; background: #fff; color: #1a1a2e; font-weight: 400; font-size: .85rem;
+      border: 1.5px solid #e0e0e0; border-radius: 8px; position: relative; min-height: 40px;
+    }
+    .watch-combo-btn:active { transform: none; }
+    .watch-placeholder { color: #aaa; }
+    .watch-chip {
+      font-size: .74rem; padding: 2px 8px; border-radius: 10px; background: #eef1ff; color: #3a4fc4;
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .watch-caret { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: .7rem; color: #888; }
+    .watch-list {
+      position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px);
+      background: #fff; border: 1.5px solid #d0d4ff; border-radius: 8px; padding: 6px;
+      box-shadow: 0 6px 18px rgba(30, 40, 90, .12);
+    }
+    .watch-opt {
+      display: flex !important; align-items: flex-start; gap: 6px; padding: 6px 6px; margin: 0 !important;
+      font-weight: 400 !important; font-size: .8rem !important; color: #333 !important; cursor: pointer; border-radius: 6px;
+    }
+    .watch-opt:hover { background: #f5f7ff; }
+    .watch-opt input { width: auto; margin-top: 2px; }
+    .watch-list-foot { display: flex; justify-content: space-between; padding: 6px 6px 2px; font-size: .75rem; }
+    .watch-list-foot a { color: #4361ee; }
     .interest-registered a.interest-exclude { color: #e63946; }
     .interest-registered a.disabled { pointer-events: none; opacity: .5; }
     .btn-reset { background: #f0f2f5; color: #555; }
@@ -1203,6 +1231,30 @@
             inputmode="numeric"
             :placeholder="f.hint"
           />
+        </div>
+
+        <!-- 관심유형(watch_type) 다중 선택 — balance_info/trading_note.py 관심종목 관심유형과 같은 A~D 코드 -->
+        <div class="field full">
+          <label>관심유형 (여러 개 선택 가능)</label>
+          <div class="watch-combo" tabindex="-1" @focusout="onWatchFocusOut">
+            <button type="button" class="watch-combo-btn" @click="watchOpen = !watchOpen">
+              <span v-if="!interestWatch.length" class="watch-placeholder">선택 안 함</span>
+              <span v-for="c in [...interestWatch].sort()" :key="c" class="watch-chip" :title="watchTypes[c]">
+                {{ c }} {{ watchTypes[c] }}
+              </span>
+              <span class="watch-caret">{{ watchOpen ? '▲' : '▼' }}</span>
+            </button>
+            <div v-if="watchOpen" class="watch-list">
+              <label v-for="(desc, c) in watchTypes" :key="c" class="watch-opt">
+                <input type="checkbox" :value="c" v-model="interestWatch" />
+                <b>[{{ c }}]</b> {{ desc }}
+              </label>
+              <div class="watch-list-foot">
+                <a href="#" @click.prevent="interestWatch = []">모두 해제</a>
+                <a href="#" @click.prevent="watchOpen = false">닫기</a>
+              </div>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -2746,6 +2798,15 @@ createApp({
     const interestSaving     = ref(false);
     const interestError      = ref('');
     let interestReqSeq = 0;                  // 빠르게 종목을 바꿀 때 늦게 온 이전 응답 무시
+    // 관심유형(watch_type): 코드 목록·설명은 서버(_WATCH_TYPES = trading_note WATCH_TYPES)에서 받는다
+    const watchTypes    = ref({});
+    const interestWatch = ref([]);           // 선택한 코드 배열(예: ['A', 'C'])
+    const watchOpen     = ref(false);
+
+    // 콤보박스 바깥으로 포커스가 나가면 목록 닫기(안쪽 체크박스 클릭은 유지)
+    function onWatchFocusOut(e) {
+      if (!e.currentTarget.contains(e.relatedTarget)) watchOpen.value = false;
+    }
 
     const canRegisterInterest = computed(() =>
       !!form.value.code && !!form.value.name && interestCode.value === form.value.code &&
@@ -2764,6 +2825,8 @@ createApp({
       interestRegistered.value = null;
       interestLoading.value = false;
       interestError.value = '';
+      interestWatch.value = [];
+      watchOpen.value = false;
     }
 
     async function fetchInterestSuggest(code) {
@@ -2778,6 +2841,9 @@ createApp({
         if (!res.ok || data.error) { interestError.value = data.error || '관심종목 기본값 조회 오류'; return; }
         interestForm.value       = { ..._emptyInterestForm(), ...data.suggest };
         interestRegistered.value = data.registered;
+        watchTypes.value         = data.watch_types || {};
+        // 관심유형은 계산할 기본값이 없으므로, 이미 등록된 종목이면 등록된 유형을 미리 선택
+        interestWatch.value      = [...((data.registered && data.registered.watch_type) || [])];
       } catch (e) {
         if (seq === interestReqSeq) interestError.value = '서버 연결 오류: ' + e.message;
       } finally {
@@ -2810,6 +2876,7 @@ createApp({
     function loadRegisteredInterest() {
       if (!interestRegistered.value) return;
       INTEREST_FIELDS.forEach(f => { interestForm.value[f.key] = interestRegistered.value[f.key]; });
+      interestWatch.value = [...(interestRegistered.value.watch_type || [])];
     }
 
     async function registerInterest() {
@@ -2818,7 +2885,8 @@ createApp({
       try {
         const res  = await fetch('/api/interest-item', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: form.value.code, name: form.value.name, ...interestForm.value }),
+          body: JSON.stringify({ code: form.value.code, name: form.value.name, ...interestForm.value,
+                                 watch_type: interestWatch.value }),
         });
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '관심종목 등록 오류'); return; }
@@ -3361,7 +3429,8 @@ createApp({
       canCalc, lookupName,
       INTEREST_FIELDS, interestForm, interestCode, interestRegistered, interestLoading, interestSaving,
       interestError, canRegisterInterest, fmtHms, loadRegisteredInterest, registerInterest,
-      interestExcluding, excludeInterest, trailEditLookup, trailTpLabel, tradingPlanLabel,
+      interestExcluding, excludeInterest, watchTypes, interestWatch, watchOpen, onWatchFocusOut,
+      trailEditLookup, trailTpLabel, tradingPlanLabel,
       sizeClass, fetchStockInfo, loadDashboard,
       calculate, save, loadList, deleteRecord, resetForm,
       runSet, runTrail, updateTrail, fmt, fmtDay,

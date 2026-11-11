@@ -791,6 +791,23 @@ def _get_market_meta(code):
 _INTEREST_FIELDS = ('through_price', 'leave_price', 'resist_price', 'support_price',
                     'trend_high_price', 'trend_low_price')
 
+# 관심유형(watch_type) — balance_info/trading_note.py의 WATCH_TYPES와 같은 코드 체계.
+# DB에는 코드(A~D)를 콤마로 이어 저장(예: 'A,C'), 화면에는 설명 표시.
+_WATCH_TYPES = {
+    'A': '가장 최근 목표가 또는 EPS 수정이 상향',
+    'B': '실측 3개 분기 동안 매출·영업이익이 연속 증가',
+    'C': '직전 분기 대비 영업이익 증감이 ±10% 이내',
+    'D': '흑자전환 또는 적자축소이고, 정기보고서 접수일 이후 주가 상승이 +5% 이하',
+}
+
+
+def _parse_watch_type(value) -> list:
+    """DB 문자열('A,C') 또는 화면 값(리스트)을 A~D 코드만 남긴 정렬 리스트로(trading_note와 동일)."""
+    if value is None:
+        return []
+    items = value if isinstance(value, (list, tuple)) else str(value).split(',')
+    return sorted({str(v).strip() for v in items if str(v).strip() in _WATCH_TYPES})
+
 
 def _kis_period_high_low(ac, code, period='D', count=30):
     """reservebot.get_period_high_low와 동일: KIS 일/주/월봉(FHKST01010400) 최근 count개
@@ -845,7 +862,7 @@ def interest_item_suggest():
         cur = conn.cursor()
         cur.execute("""
             SELECT through_price, leave_price, resist_price, support_price,
-                   trend_high_price, trend_low_price, interest_day, interest_dtm
+                   trend_high_price, trend_low_price, interest_day, interest_dtm, watch_type
             FROM public."interestItem_interest_item"
             WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
             ORDER BY last_chg_date DESC LIMIT 1
@@ -857,10 +874,12 @@ def interest_item_suggest():
             registered = dict(zip(_INTEREST_FIELDS, row[:6]))
             registered['interest_day'] = row[6]
             registered['interest_dtm'] = row[7]
+            registered['watch_type']   = _parse_watch_type(row[8])
     except Exception as e:
         print(f"[관심종목] {code} 등록 여부 조회 오류: {e}")
 
-    return jsonify({'code': code, 'acct_no': ac['acct_no'], 'suggest': suggest, 'registered': registered})
+    return jsonify({'code': code, 'acct_no': ac['acct_no'], 'suggest': suggest, 'registered': registered,
+                    'watch_types': _WATCH_TYPES})
 
 
 @app.route('/api/interest-item', methods=['POST'])
@@ -877,6 +896,9 @@ def interest_item_register():
         if v is None or v <= 0:
             return jsonify({'error': f'관심종목 가격을 모두 0보다 큰 값으로 입력하세요. ({f})'}), 400
         prices[f] = int(v)
+    # 관심유형: 선택 안 하면 NULL(trading_note와 동일하게 'A,C' 형태로 저장)
+    watch_type = _parse_watch_type(data.get('watch_type'))
+    watch_type_db = ','.join(watch_type) or None
 
     ac = _get_api_account()
     if not ac or not ac.get('acct_no'):
@@ -891,12 +913,13 @@ def interest_item_register():
         cur.execute("""
             UPDATE public."interestItem_interest_item"
             SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
-                support_price = %s, trend_high_price = %s, trend_low_price = %s, last_chg_date = %s
+                support_price = %s, trend_high_price = %s, trend_low_price = %s, watch_type = %s,
+                last_chg_date = %s
             WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
             RETURNING interest_day, interest_dtm
         """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
-              prices['support_price'], prices['trend_high_price'], prices['trend_low_price'], now,
-              acct_no, code))
+              prices['support_price'], prices['trend_high_price'], prices['trend_low_price'],
+              watch_type_db, now, acct_no, code))
         # 변경(UPDATE)이면 등록일시(interest_day/dtm)는 원래 값 그대로다 — 화면 '관심종목
         # 등록일시'가 interest_item_suggest의 registered와 같은 값을 보이도록 실제 값을 돌려준다.
         updated_rows = cur.fetchall()
@@ -907,11 +930,12 @@ def interest_item_register():
             cur.execute("""
                 INSERT INTO public."interestItem_interest_item"
                     (acct_no, code, name, through_price, leave_price, resist_price, support_price,
-                     trend_high_price, trend_low_price, interest_day, interest_dtm, proc_yn, last_chg_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Y', %s)
+                     trend_high_price, trend_low_price, watch_type, interest_day, interest_dtm,
+                     proc_yn, last_chg_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Y', %s)
             """, (acct_no, code, name, prices['through_price'], prices['leave_price'],
                   prices['resist_price'], prices['support_price'],
-                  prices['trend_high_price'], prices['trend_low_price'],
+                  prices['trend_high_price'], prices['trend_low_price'], watch_type_db,
                   interest_day, interest_dtm, now))
         conn.commit()
         cur.close()
@@ -924,7 +948,8 @@ def interest_item_register():
     msg = f"[{name}] 관심종목 {'등록' if inserted else '변경'} 완료 (계좌 {acct_no})"
     print(f"[관심종목] {code} {msg}")
     return jsonify({'message': msg, 'inserted': inserted, 'acct_no': acct_no,
-                    'registered': {**prices, 'interest_day': interest_day, 'interest_dtm': interest_dtm}})
+                    'registered': {**prices, 'interest_day': interest_day, 'interest_dtm': interest_dtm,
+                                   'watch_type': watch_type}})
 
 
 @app.route('/api/interest-item/exclude', methods=['POST'])
