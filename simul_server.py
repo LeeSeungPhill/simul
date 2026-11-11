@@ -857,17 +857,27 @@ def interest_item_suggest():
     }
 
     registered = None
+    main_business = ''
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
             SELECT through_price, leave_price, resist_price, support_price,
-                   trend_high_price, trend_low_price, interest_day, interest_dtm, watch_type
+                   trend_high_price, trend_low_price, interest_day, interest_dtm, watch_type,
+                   main_business
             FROM public."interestItem_interest_item"
             WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
             ORDER BY last_chg_date DESC LIMIT 1
         """, (int(ac['acct_no']), code))
         row = cur.fetchone()
+        # 주요사업 기본값: 등록된 관심종목 값 → 없으면 투자관리(invest_mng) 주요사업
+        if row and row[9]:
+            main_business = row[9]
+        else:
+            cur.execute("SELECT main_business FROM public.invest_mng WHERE code = %s AND proc_yn = 'Y' "
+                        "ORDER BY mod_dt DESC NULLS LAST LIMIT 1", (code,))
+            mrow = cur.fetchone()
+            main_business = (mrow[0] if mrow else None) or ''
         cur.close()
         conn.close()
         if row:
@@ -875,11 +885,12 @@ def interest_item_suggest():
             registered['interest_day'] = row[6]
             registered['interest_dtm'] = row[7]
             registered['watch_type']   = _parse_watch_type(row[8])
+            registered['main_business'] = row[9] or ''
     except Exception as e:
         print(f"[관심종목] {code} 등록 여부 조회 오류: {e}")
 
     return jsonify({'code': code, 'acct_no': ac['acct_no'], 'suggest': suggest, 'registered': registered,
-                    'watch_types': _WATCH_TYPES})
+                    'main_business': main_business, 'watch_types': _WATCH_TYPES})
 
 
 @app.route('/api/interest-item', methods=['POST'])
@@ -899,6 +910,20 @@ def interest_item_register():
     # 관심유형: 선택 안 하면 NULL(trading_note와 동일하게 'A,C' 형태로 저장)
     watch_type = _parse_watch_type(data.get('watch_type'))
     watch_type_db = ','.join(watch_type) or None
+    main_business = (data.get('main_business') or '').strip() or None
+
+    # 시장구분/규모/업종/시가총액 — 투자정보 적용(invest_mng)과 같은 _get_market_meta 값.
+    # 화면이 종목 조회 때 받은 값을 보내면 그대로 쓰고, 빠진 값이 있으면 여기서 조회한다.
+    meta = {k: (str(data.get(k)).strip() if data.get(k) not in (None, '') else None)
+            for k in ('market', 'size', 'industry', 'mktcap')}
+    if not all(meta.values()):
+        try:
+            m = _get_market_meta(code)
+            meta = {k: meta[k] or (str(m[k]) if m.get(k) not in (None, '') else None) for k in meta}
+        except Exception as e:
+            print(f"[관심종목] {code} 시장정보 조회 오류: {e}")
+    mk_num = _num_or_none(meta['mktcap'])
+    meta['mktcap'] = str(int(mk_num)) if mk_num is not None else None
 
     ac = _get_api_account()
     if not ac or not ac.get('acct_no'):
@@ -914,12 +939,14 @@ def interest_item_register():
             UPDATE public."interestItem_interest_item"
             SET name = %s, through_price = %s, leave_price = %s, resist_price = %s,
                 support_price = %s, trend_high_price = %s, trend_low_price = %s, watch_type = %s,
+                main_business = %s, market = %s, size = %s, industry = %s, mktcap = %s,
                 last_chg_date = %s
             WHERE acct_no = %s AND code = %s AND proc_yn = 'Y'
             RETURNING interest_day, interest_dtm
         """, (name, prices['through_price'], prices['leave_price'], prices['resist_price'],
               prices['support_price'], prices['trend_high_price'], prices['trend_low_price'],
-              watch_type_db, now, acct_no, code))
+              watch_type_db, main_business, meta['market'], meta['size'], meta['industry'],
+              meta['mktcap'], now, acct_no, code))
         # 변경(UPDATE)이면 등록일시(interest_day/dtm)는 원래 값 그대로다 — 화면 '관심종목
         # 등록일시'가 interest_item_suggest의 registered와 같은 값을 보이도록 실제 값을 돌려준다.
         updated_rows = cur.fetchall()
@@ -930,12 +957,14 @@ def interest_item_register():
             cur.execute("""
                 INSERT INTO public."interestItem_interest_item"
                     (acct_no, code, name, through_price, leave_price, resist_price, support_price,
-                     trend_high_price, trend_low_price, watch_type, interest_day, interest_dtm,
+                     trend_high_price, trend_low_price, watch_type, main_business,
+                     market, size, industry, mktcap, interest_day, interest_dtm,
                      proc_yn, last_chg_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Y', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Y', %s)
             """, (acct_no, code, name, prices['through_price'], prices['leave_price'],
                   prices['resist_price'], prices['support_price'],
                   prices['trend_high_price'], prices['trend_low_price'], watch_type_db,
+                  main_business, meta['market'], meta['size'], meta['industry'], meta['mktcap'],
                   interest_day, interest_dtm, now))
         conn.commit()
         cur.close()
@@ -949,7 +978,8 @@ def interest_item_register():
     print(f"[관심종목] {code} {msg}")
     return jsonify({'message': msg, 'inserted': inserted, 'acct_no': acct_no,
                     'registered': {**prices, 'interest_day': interest_day, 'interest_dtm': interest_dtm,
-                                   'watch_type': watch_type}})
+                                   'watch_type': watch_type, 'main_business': main_business or '',
+                                   **meta}})
 
 
 @app.route('/api/interest-item/exclude', methods=['POST'])

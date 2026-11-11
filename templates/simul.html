@@ -1256,6 +1256,12 @@
             </div>
           </div>
         </div>
+
+        <!-- 주요사업(main_business) — 투자 관리 입력의 주요사업과 같은 입력. 관심종목 등록 시 저장 -->
+        <div class="field full">
+          <label>주요사업</label>
+          <textarea v-model.trim="interestMainBusiness" rows="2" placeholder="주요사업 내용을 입력하세요"></textarea>
+        </div>
       </template>
 
     </div>
@@ -2802,6 +2808,7 @@ createApp({
     const watchTypes    = ref({});
     const interestWatch = ref([]);           // 선택한 코드 배열(예: ['A', 'C'])
     const watchOpen     = ref(false);
+    const interestMainBusiness = ref('');    // 주요사업(등록값 → 없으면 invest_mng 주요사업)
 
     // 콤보박스 바깥으로 포커스가 나가면 목록 닫기(안쪽 체크박스 클릭은 유지)
     function onWatchFocusOut(e) {
@@ -2827,6 +2834,7 @@ createApp({
       interestError.value = '';
       interestWatch.value = [];
       watchOpen.value = false;
+      interestMainBusiness.value = '';
     }
 
     async function fetchInterestSuggest(code) {
@@ -2844,6 +2852,7 @@ createApp({
         watchTypes.value         = data.watch_types || {};
         // 관심유형은 계산할 기본값이 없으므로, 이미 등록된 종목이면 등록된 유형을 미리 선택
         interestWatch.value      = [...((data.registered && data.registered.watch_type) || [])];
+        interestMainBusiness.value = data.main_business || '';
       } catch (e) {
         if (seq === interestReqSeq) interestError.value = '서버 연결 오류: ' + e.message;
       } finally {
@@ -2877,16 +2886,23 @@ createApp({
       if (!interestRegistered.value) return;
       INTEREST_FIELDS.forEach(f => { interestForm.value[f.key] = interestRegistered.value[f.key]; });
       interestWatch.value = [...(interestRegistered.value.watch_type || [])];
+      interestMainBusiness.value = interestRegistered.value.main_business || '';
     }
 
     async function registerInterest() {
       if (!canRegisterInterest.value) return;
       interestSaving.value = true;
+      const si = stockInfo.value;
       try {
         const res  = await fetch('/api/interest-item', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code: form.value.code, name: form.value.name, ...interestForm.value,
-                                 watch_type: interestWatch.value }),
+                                 watch_type: interestWatch.value,
+                                 main_business: interestMainBusiness.value,
+                                 // 종목 조회 때 받은 시장정보(투자정보 적용과 같은 값) — 없으면 서버가 조회
+                                 ...(si && si.code === form.value.code
+                                     ? { market: si.market, size: si.size, industry: si.industry, mktcap: si.mktcap }
+                                     : {}) }),
         });
         const data = await res.json();
         if (!res.ok) { showAlert(data.error || '관심종목 등록 오류'); return; }
@@ -3430,6 +3446,7 @@ createApp({
       INTEREST_FIELDS, interestForm, interestCode, interestRegistered, interestLoading, interestSaving,
       interestError, canRegisterInterest, fmtHms, loadRegisteredInterest, registerInterest,
       interestExcluding, excludeInterest, watchTypes, interestWatch, watchOpen, onWatchFocusOut,
+      interestMainBusiness,
       trailEditLookup, trailTpLabel, tradingPlanLabel,
       sizeClass, fetchStockInfo, loadDashboard,
       calculate, save, loadList, deleteRecord, resetForm,
