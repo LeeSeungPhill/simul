@@ -305,6 +305,19 @@ def get_next_completed_10min_dt(dt: datetime) -> datetime:
     return dt.replace(minute=base, second=0, microsecond=0) + timedelta(minutes=10)
 
 
+def _restore_base_key(start_date, proc_min):
+    """trail_tp='2' DB 복원 시 기준봉 키 복원 (proc_min이 속한 10분봉) — Batch 와 동일
+    - 돌파 직후(proc_min=돌파 분봉): 돌파 10분봉 완성 시점 매도/이탈 감지 스킵
+    - 10분봉 완성 처리 후(proc_min=x9분): 해당 봉은 이미 처리되어 재처리 없음 → 영향 없음"""
+    try:
+        if not proc_min:
+            return None
+        _pm = str(proc_min).zfill(6)[:6]
+        return get_10min_key(datetime.strptime(str(start_date) + _pm, "%Y%m%d%H%M%S"))
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────
 # ATR
 # ─────────────────────────────────────────
@@ -321,15 +334,66 @@ def calculate_atr(daily_data, period=14):
 # ─────────────────────────────────────────
 # 호가 단위
 # ─────────────────────────────────────────
+def get_tick_size(price: int) -> int:
+    """KRX 호가가격단위 (2023.01.25 개편, 유가·코스닥 공통) — Batch/kis_trading_trail_vol_state.py 와 동일"""
+    if price < 2000:     return 1
+    elif price < 5000:   return 5
+    elif price < 20000:  return 10
+    elif price < 50000:  return 50
+    elif price < 200000: return 100
+    elif price < 500000: return 500
+    return 1000
+
+
 def get_valid_sell_price(price: int) -> int:
-    if price < 1000:        tick = 1
-    elif price < 5000:      tick = 5
-    elif price < 10000:     tick = 10
-    elif price < 50000:     tick = 50
-    elif price < 100000:    tick = 100
-    elif price < 500000:    tick = 500
-    else:                   tick = 1000
+    """KRX 호가단위 기준으로 price를 유효한 매도 호가로 내림처리."""
+    price = int(price)
+    tick = get_tick_size(price)
     return (price // tick) * tick
+
+
+TENMIN_SELL_MAX_GAP_PCT = 1.0   # 현재가가 매도 하한보다 이 비율 이상 낮으면 현재가 즉시 청산 (이내면 현재가+1틱)
+TENMIN_SELL_REORDER_SEC = 120   # 10분봉 조건(D/A/B/C) 매도 미체결 재주문 간격 (Batch 와 동일 2분)
+
+
+def plan_current_sell(cur_price: int, breach_price: int = 0):
+    """Batch plan_current_sell 시뮬 버전 — trail_tp 'L' 이탈 확정 매도 주문가: 현재가 지정가
+    (이탈가는 이미 확정 이탈 → 하한으로 두지 않음). 시뮬은 신호 분봉 종가를 현재가로 사용.
+    반환: (주문가, 설명)"""
+    cur_price = get_valid_sell_price(cur_price)
+    _ref = f", 이탈가 {int(breach_price):,}" if breach_price else ""
+    return cur_price, f"현재가 지정가:{cur_price:,}{_ref}"
+
+
+L_DOWNTREND_SELL_1510 = False   # trail_tp 'L' 15:10 이후 하락추세 기준가 이탈 매도 (Batch 와 동일하게 제외)
+
+AUTO_SELL_TAG = "[AUTO] "       # 이 스크립트 자동 매도 표식 (trade_result) → 미체결 재주문 재현 대상, 화면 수동 매도('매도처리')와 구분
+
+
+def _auto_tag(trade_result) -> str:
+    s = str(trade_result) if trade_result is not None else ""
+    return s if s.startswith(AUTO_SELL_TAG) else AUTO_SELL_TAG + s
+
+
+def plan_tenmin_sell(floor_price: int, cur_price: int, short_market_down: bool,
+                     max_gap_pct: float = TENMIN_SELL_MAX_GAP_PCT):
+    """Batch plan_tenmin_sell 시뮬 버전 — trail_tp '1','2' 목표가 돌파 후 10분봉 조건 매도 주문가 결정.
+    시뮬은 실시간 현재가 대신 신호 발생 분봉(10분봉 완성 분봉)의 종가를 현재가로 사용한다.
+    floor_price(조건별 매도가)는 주문가가 아닌 '받고 싶은 하한'으로만 사용
+    - 현재가 ≥ 하한                               : 현재가 지정가
+    - 시장 약세 or 하한 대비 -max_gap_pct% 초과 하회 : 현재가 지정가 (즉시 청산)
+    - 하한 대비 소폭 하회                          : 현재가 +1틱 지정가
+    반환: (주문가, 설명)"""
+    cur_price   = get_valid_sell_price(cur_price)
+    floor_price = int(floor_price)
+    if cur_price >= floor_price:
+        return cur_price, f"현재가 지정가:{cur_price:,}(≥ 하한 {floor_price:,})"
+    gap = (floor_price - cur_price) / floor_price * 100 if floor_price > 0 else 0
+    if short_market_down or gap > max_gap_pct:
+        _why = "시장 약세" if short_market_down else f"하한 대비 -{gap:.2f}%"
+        return cur_price, f"현재가 지정가:{cur_price:,}({_why}, 하한 {floor_price:,})"
+    up_price = cur_price + get_tick_size(cur_price)
+    return up_price, f"현재가+1틱 지정가:{up_price:,}(하한 {floor_price:,} 대비 -{gap:.2f}%)"
 
 
 # ─────────────────────────────────────────
@@ -526,7 +590,8 @@ def _calc_peak_trough_trend(highs: list, closes: list, lows: list, dates: list) 
         ref_price = last_high
     else:
         ref_price = None
-    return {'trend': cur_trend, 'start_date': dates[start_idx], 'ref_price': ref_price}
+    # support_price: 직전 지그재그 저점 — 장중 종가가 이 아래면 상승추세가 깨진 것으로 판단 (Batch 동일)
+    return {'trend': cur_trend, 'start_date': dates[start_idx], 'ref_price': ref_price, 'support_price': last_low}
 
 
 def get_stock_trend(stock_code: str, trade_date: str, access_token: str, app_key: str, app_secret: str) -> dict | None:
@@ -578,7 +643,7 @@ def _do_simul_sell_update(nick, trail_price, trail_qty, trail_amt, trail_rate,
     trail_rate   = float(trail_rate)
     basic_qty    = int(basic_qty)
     basic_amt    = int(basic_amt)
-    trade_result = (trade_result or '')[:100]
+    trade_result = _auto_tag(trade_result or '')[:100]
     try:
         cur = conn.cursor()
         cur.execute(f"""
@@ -703,6 +768,8 @@ def get_kis_1min_from_datetime_simul(
         _trend_up         = bool(_stock_trend_pre and _stock_trend_pre.get('trend') == 'Uptrend')
         _trend_down       = bool(_stock_trend_pre and _stock_trend_pre.get('trend') == 'Downtrend')
         _trend_ref_price  = (_stock_trend_pre.get('ref_price') or 0) if _stock_trend_pre else 0
+        _up_support_price = (_stock_trend_pre.get('support_price') or 0) if _stock_trend_pre else 0
+        _uptrend_broken   = False   # 상승추세라도 종가가 기준 저점 아래로 내려가면 이후 상승추세 제외 해제
         if verbose and _trend_up:
             print(f"{stock_name}[{stock_code}] 현재 상승추세({_stock_trend_pre.get('start_date')}~, 기준가:{_trend_ref_price:,}) → 추세기준 감지")
         elif verbose and _trend_down:
@@ -746,6 +813,26 @@ def get_kis_1min_from_datetime_simul(
         downtrend_warn_last_key    = _alert_keys.get("downtrend_warn")
         breakdown_notify_last_key  = _alert_keys.get("L")
         _market_sell_checked       = False
+        _now_10min_key             = get_completed_10min_key(datetime.now())  # 형성 중인 10분봉 키 (이 키 이상은 미완성)
+
+        def _confirm_early_vol_L(key, dt, min_elapsed=3, n=20, mult=3.0):
+            """진행 중 10분봉 경과분 비례 거래량 조기 확인: 누적 ≥ 직전 n봉 평균 × mult × 경과분/10 (Batch 동일)"""
+            elapsed = int((dt - key).total_seconds() // 60) + 1
+            if elapsed < min_elapsed:
+                return None
+            prev = tenmin_vol_ser[tenmin_vol_ser["tenmin_key"] < key].tail(n)["tenmin_vol"]
+            if prev.empty:
+                return None
+            cur_vol = int(_df_tv.loc[(_df_tv["dt"] >= key) & (_df_tv["dt"] <= dt), "거래량"].sum())
+            need = prev.mean() * mult * elapsed / 10
+            if cur_vol >= need:
+                return f"진행중 10분봉 {elapsed}분 거래량({cur_vol:,}주) ≥ 평균×{mult:g}×{elapsed}/10({int(need):,}주)"
+            return None
+
+        def _l_order_plan(close_price, breach_price):
+            """이탈 매도 주문가 (Batch _l_order_plan → plan_current_sell): 현재가 지정가
+            (미체결 시 update_trail_price_at_close 에서 2분 재주문 재현). 반환: (주문가, 설명)"""
+            return plan_current_sell(close_price, breach_price)
 
         for _, row in df.iterrows():
             if int(proc_min) < int(row['시간'].replace(':', '') + '00'):
@@ -756,38 +843,57 @@ def get_kis_1min_from_datetime_simul(
                 acml_vol     = int(row["누적거래량"])
                 breakout_check  = high_price  if breakout_type  == "high"  else close_price
                 breakdown_check = low_price   if breakdown_type == "low"   else close_price
-                _late_open   = trade_date.endswith("0102") or trade_date.endswith("1119")
-                if _late_open and row["dt"].time() < datetime.strptime("10:10", "%H:%M").time():
+                # 당일 고가가 전일종가 대비 15%+ 달성 시 플래그 True (이후 유지, 09:10 이전 포함)
+                if not has_reached_15pct and prev_close and int(prev_close) > 0:
+                    if high_price >= int(prev_close * 1.15):
+                        has_reached_15pct = True
+                        print(f"  [시뮬] [{stock_name}-{stock_code}] 당일 15%+ 상승 달성({row['시간']})")
+
+                # 09:10 또는 10:10 이전: 매도 판단 미처리 — 15% 달성 상태면 10분봉 완성 시 고점만 반영
+                _late_open = trade_date.endswith("0102") or trade_date.endswith("1119")
+                _open_cut  = datetime.strptime("10:10" if _late_open else "09:10", "%H:%M").time()
+                if row["dt"].time() < _open_cut:
+                    if has_reached_15pct:
+                        _pk_key = get_10min_key(row["dt"])
+                        _pk_df  = df[df["dt"].apply(get_10min_key) == _pk_key]
+                        if not _pk_df.empty and row["dt"] == _pk_df["dt"].max() and _pk_key < _now_10min_key:
+                            peak_high_tenmin = int(max(peak_high_tenmin, int(_pk_df["고가"].astype(int).max())))
+                            tenmin_completed_key_last = _pk_key
                     continue
-                elif not _late_open and row["dt"].time() < datetime.strptime("09:10", "%H:%M").time():
-                    continue
+
                 current_time = row["시간"].replace(":", "")
                 vol_ratio    = (acml_vol / prev_volume) * 100 if prev_volume > 0 else 0
                 gain_pct     = ((close_price - basic_price) / basic_price) * 100 if basic_price > 0 else 0
 
-                if not has_reached_15pct and prev_close and int(prev_close) > 0:
-                    if high_price >= int(prev_close * 1.15):
-                        has_reached_15pct = True
+                # 상승추세 기준 저점 종가 이탈 → 상승추세 제외 해제 (당일 유지)
+                if _trend_up and not _uptrend_broken and _up_support_price > 0 and close_price < _up_support_price:
+                    _uptrend_broken = True
+                    print(f"  [시뮬] [{stock_name}-{stock_code}] 상승추세 기준 저점({_up_support_price:,}) 종가 이탈({row['시간']}) → 이탈 감시 적용")
+                _up_gate = _trend_up and not _uptrend_broken   # True 면 이탈가 감지·저가 이탈 확정·고점 되돌림 미수행
 
-                # 상승추세 아닌 추세이탈가 즉시 매도
-                if not _trend_up and exit_price and int(exit_price) > 0 and close_price <= int(exit_price):
-                    _ep         = int(exit_price)
+                # [최우선] 추세이탈가(exit_price) 이탈 → 즉시 매도 (추세 무관, breakdown_wait 무관)
+                if exit_price and int(exit_price) > 0 and close_price <= int(exit_price):
+                    _ep          = int(exit_price)
+                    _ep_price, _ep_desc = _l_order_plan(close_price, _ep)
                     i_trail_plan = trail_plan if trail_plan else "100"
-                    trail_qty   = int(basic_qty * int(i_trail_plan) * 0.01)
-                    trail_amt   = _ep * trail_qty
-                    trail_rate  = round((100 - (_ep / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
-                    u_basic_qty = basic_qty - trail_qty
-                    u_basic_amt = basic_price * u_basic_qty
-                    result = update_simul_daily_close(
-                        nick, _ep, trail_qty, trail_amt, trail_rate, i_trail_plan,
+                    trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
+                    trail_amt    = _ep_price * trail_qty
+                    trail_rate   = round((100 - (_ep_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
+                    u_basic_qty  = basic_qty - trail_qty
+                    u_basic_amt  = basic_price * u_basic_qty
+                    update_simul_daily_close(
+                        nick, _ep_price, trail_qty, trail_amt, trail_rate, i_trail_plan,
                         u_basic_qty, u_basic_amt, acct_no,
                         stock_code, stock_name, start_date, start_time, "4",
                         row['시간'].replace(':', '') + '00',
                         f"추세이탈가({_ep:,})원 이탈 즉시 매도", conn
                     )
+                    if verbose:
+                        print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
+                              f" 수익률:{gain_pct:.1f}%, 추세이탈가({_ep:,})원 이탈 즉시 매도 ({_ep_desc})")
                     signals.append({"signal_type": "EXIT_PRICE_IMMEDIATE",
                                     "종목코드": stock_code, "발생일자": row["일자"],
-                                    "발생시간": row["시간"], "매도가": _ep, "수익률": gain_pct})
+                                    "발생시간": row["시간"], "매도가": _ep_price, "수익률": gain_pct})
                     return signals
 
                 current_10min_key = get_10min_key(row["dt"])
@@ -809,19 +915,27 @@ def get_kis_1min_from_datetime_simul(
                                                            "reason": "", "signal_type": "",
                                                            "effective_stop": 0, "order_price": 0})
                     if breakdown_wait["active"] and breakdown_wait["tenmin_low"] is not None:
-                        if not _trend_up and low_price < breakdown_wait["tenmin_low"]:
+                        # 상승추세 아닌 거래량 조건 충족 확정 + 현재 저가가 이탈 발생 10분봉 저가 이탈 시 매도
+                        if not _up_gate and low_price < breakdown_wait["tenmin_low"]:
                             sell_trigger     = True
                             sell_reason      = (breakdown_wait["reason"]
-                                                + f" → 10분봉저가({breakdown_wait['tenmin_low']:,}) 이탈 확정")
+                                                + f" → 10분봉저가({breakdown_wait['tenmin_low']:,}) 이탈 확정"
+                                                + f" (이탈봉:{breakdown_wait['tenmin_vol']:,}주/직전20봉평균:{breakdown_wait['tenmin_avg_vol']:,}주)")
                             sell_signal_type = breakdown_wait["signal_type"]
                             effective_stop   = breakdown_wait["effective_stop"]
-                            # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
-                            if _short_market_down:
-                                order_price = close_price
-                            else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 현재가가 이탈가 아래면 이탈가 otherwise 현재가
-                                order_price = effective_stop if close_price < effective_stop else close_price
+                            order_price, _   = _l_order_plan(close_price, effective_stop)   # 현재가 지정가
                     else:
                         sell_trigger = False
+
+                # 진행 중 10분봉 경과분 비례 거래량 조기 확인 (10분봉 완성 대기 없이 확정)
+                if breakdown_wait["active"] and not sell_trigger and not _up_gate and current_10min_key == breakdown_wait["tenmin_key"]:
+                    _early_detail = _confirm_early_vol_L(current_10min_key, row["dt"])
+                    if _early_detail:
+                        sell_trigger     = True
+                        sell_reason      = breakdown_wait["reason"] + f" → {_early_detail}"
+                        sell_signal_type = breakdown_wait["signal_type"]
+                        effective_stop   = breakdown_wait["effective_stop"]
+                        order_price, _   = _l_order_plan(close_price, effective_stop)
 
                 if not breakdown_wait["active"] and not sell_trigger:
                     if has_reached_15pct:
@@ -829,7 +943,8 @@ def get_kis_1min_from_datetime_simul(
                         tenmin_df_b = df[df["dt"].apply(get_10min_key) == current_10min_key_b]
                         is_last_of_tenmin = (not tenmin_df_b.empty
                                              and row["dt"] == tenmin_df_b["dt"].max())
-                        if is_last_of_tenmin and current_10min_key_b != tenmin_completed_key_last:
+                        # 형성 중인 10분봉(_now_10min_key 이상)은 미완성 → 완성 판단 제외
+                        if is_last_of_tenmin and current_10min_key_b != tenmin_completed_key_last and current_10min_key_b < _now_10min_key:
                             tenmin_completed_key_last = current_10min_key_b
                             tenmin_high_b             = int(tenmin_df_b["고가"].astype(int).max())
                             tenmin_close_b            = close_price
@@ -837,20 +952,21 @@ def get_kis_1min_from_datetime_simul(
                             safety_margin_L           = int(basic_price * 1.10)
                             peak_to_safety_L          = peak_high_tenmin - safety_margin_L
                             effective_retracement_rate_L = 0.3 if row["dt"].time() >= dt_time(14, 30) else 0.5
-                            if not _trend_up and (peak_high_tenmin > safety_margin_L
+                            if not _up_gate and (peak_high_tenmin > safety_margin_L
                                     and peak_to_safety_L >= int(safety_margin_L * 0.05)):
                                 peak_sell_threshold_L = peak_high_tenmin - int(peak_to_safety_L * effective_retracement_rate_L)
                                 if tenmin_close_b < peak_sell_threshold_L:
                                     sell_trigger     = True
                                     sell_price_b     = get_valid_sell_price(max(tenmin_close_b, peak_sell_threshold_L))
-                                    sell_reason      = f"고점({peak_high_tenmin:,})원 되돌림 임계({peak_sell_threshold_L:,})원 종가 이탈 (매도가:{sell_price_b:,})"
+                                    # 임계가는 하한으로만 사용, 현재가 기준 지정가 (Batch plan_tenmin_sell)
+                                    order_price, _b_desc = plan_tenmin_sell(sell_price_b, tenmin_close_b, _short_market_down)
+                                    sell_reason      = f"고점({peak_high_tenmin:,})원 되돌림 임계({peak_sell_threshold_L:,})원 종가 이탈 (주문가 {_b_desc})"
                                     sell_signal_type = "PEAK_RETRACEMENT_B"
-                                    order_price      = sell_price_b
                         if not sell_trigger:
                             _safety_m = int(basic_price * 1.10)
                             _p2s      = peak_high_tenmin - _safety_m
                             _cond_b_capable = peak_high_tenmin > _safety_m and _p2s >= int(_safety_m * 0.05)
-                            if not _trend_up and not _cond_b_capable:
+                            if not _up_gate and not _cond_b_capable:
                                 fixed_stop = int(stop_price) if stop_price else 0
                                 if fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
                                      # 시장 단기 하락인 경우 매도 진행
@@ -861,9 +977,9 @@ def get_kis_1min_from_datetime_simul(
                                                            "signal_type": "FIXED_STOP",
                                                            "effective_stop": fixed_stop, "order_price": close_price})
                                         sell_trigger = True
-                                        sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%] (매도가:{close_price:,})"
+                                        order_price, _w_desc = _l_order_plan(close_price, fixed_stop)
+                                        sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [15%달성·수익률:{gain_pct:.1f}%] (주문가 {_w_desc})"
                                         sell_signal_type = "FIXED_STOP"
-                                        order_price      = close_price
 
                                         if verbose and breakdown_notify_last_key is None:
                                             breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
@@ -881,7 +997,7 @@ def get_kis_1min_from_datetime_simul(
                                             print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] 15%달성·수익률:{gain_pct:.1f}%, 이탈가({fixed_stop:,}) 이탈 → 10분봉 저가 대기")
                     else:
                         fixed_stop = int(stop_price) if stop_price else 0
-                        if not _trend_up and fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
+                        if not _up_gate and fixed_stop > 0 and close_price <= fixed_stop and volume_rate_chk(current_time, vol_ratio, trade_date):
                             # 시장 단기 하락인 경우 매도 진행
                             if _short_market_down:
                                 breakdown_wait.update({"active": True, "tenmin_key": current_10min_key,
@@ -890,9 +1006,9 @@ def get_kis_1min_from_datetime_simul(
                                                    "signal_type": "FIXED_STOP",
                                                    "effective_stop": fixed_stop, "order_price": close_price})
                                 sell_trigger = True
-                                sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%] (매도가:{close_price:,})"
+                                order_price, _w_desc = _l_order_plan(close_price, fixed_stop)
+                                sell_reason      = f"이탈가({fixed_stop:,})원 이탈 [수익률:{gain_pct:.1f}%] (주문가 {_w_desc})"
                                 sell_signal_type = "FIXED_STOP"
-                                order_price      = close_price
                                 if verbose and breakdown_notify_last_key is None:
                                     breakdown_notify_last_key = current_10min_key.strftime("%Y%m%d%H%M")
                                     _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "L", breakdown_notify_last_key)
@@ -911,7 +1027,7 @@ def get_kis_1min_from_datetime_simul(
                 # 하락추세 이탈 사전 경고
                 _downtrend_start   = "101000" if (trade_date.endswith("0102") or trade_date.endswith("1119")) else "091000"
                 _downtrend_warn_end = "161000" if trade_date.endswith("1119") else "151000"
-                if (current_time >= _downtrend_start and current_time < _downtrend_warn_end and _trend_down and close_price < _trend_ref_price):                        
+                if (current_time >= _downtrend_start and current_time < _downtrend_warn_end and _trend_down and close_price < _trend_ref_price and row["dt"] == df["dt"].max()):
                     _cur_key_str = current_10min_key.strftime("%Y%m%d%H%M")
                     if downtrend_warn_last_key is None:
                         downtrend_warn_last_key = _cur_key_str
@@ -949,15 +1065,16 @@ def get_kis_1min_from_datetime_simul(
 
                 # 15:10 이후 하락 추세 매도
                 _downtrend_cutoff = "161000" if trade_date.endswith("1119") else "151000"
-                if (not breakdown_wait["active"] and not sell_trigger and current_time >= _downtrend_cutoff and _trend_down and close_price < _trend_ref_price and not _market_sell_checked):
+                if (L_DOWNTREND_SELL_1510 and not breakdown_wait["active"] and not sell_trigger and current_time >= _downtrend_cutoff and _trend_down and close_price < _trend_ref_price and not _market_sell_checked and row["dt"] == df["dt"].max()):
                     _market_sell_checked = True
 
-                    _mkt_reason = f"[장종료전] 종가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈"
+                    _dt_price, _dt_desc = _l_order_plan(close_price, int(_trend_ref_price))
+                    _mkt_reason = f"[장종료전] 종가:{close_price:,}원 하락추세:{_trend_ref_price:,}원 이탈 (주문가 {_dt_desc})"
                     print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_mkt_reason}")
-                    
+
                     update_simul_daily_close(
-                        nick, close_price, basic_qty, close_price * basic_qty, round((close_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0,
-                        "100", basic_qty, close_price * basic_qty, acct_no,
+                        nick, _dt_price, basic_qty, _dt_price * basic_qty, round((_dt_price / basic_price - 1) * 100, 2) if basic_price > 0 else 0,
+                        "100", basic_qty, _dt_price * basic_qty, acct_no,
                         stock_code, stock_name, start_date, start_time, "4",
                         row['시간'].replace(':', '') + '00', _mkt_reason, conn
                     )
@@ -967,7 +1084,7 @@ def get_kis_1min_from_datetime_simul(
                         "발생일자": row["일자"],
                         "발생시간": row["시간"],
                         "매도수량": basic_qty,
-                        "매도가격": close_price,
+                        "매도가격": _dt_price,
                     })
                     return signals
                     # _mkt_data = _mkt_trend_pre
@@ -1033,6 +1150,9 @@ def get_kis_1min_from_datetime_simul(
                         stock_code, stock_name, start_date, start_time, "4",
                         row['시간'].replace(':', '') + '00', sell_reason, conn
                     )
+                    if verbose:
+                        print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
+                              f" {sell_reason}, 매도가:{order_price:,}원, 현재가:{close_price:,}원")
                     signals.append({"signal_type": sell_signal_type, "종목코드": stock_code,
                                     "발생일자": row["일자"], "발생시간": row["시간"],
                                     "이탈가격": order_price, "수익률": gain_pct})
@@ -1045,8 +1165,8 @@ def get_kis_1min_from_datetime_simul(
                 "base_low":  int(stop_price)   if stop_price   else 0,
                 "base_high": int(target_price) if target_price else 0,
                 "base_vol":  int(volumn)       if volumn       else 0,
-                "peak_high": int(target_price) if target_price else 0,
-                "base_key":  None,
+                "peak_high": int(target_price) if target_price else 0,   # DB target_price = 누적 최고가
+                "base_key":  _restore_base_key(start_date, proc_min),    # 돌파봉 완성 시점 스킵 (Batch 동일)
             }
         else:
             tenmin_state = {
@@ -1100,14 +1220,6 @@ def get_kis_1min_from_datetime_simul(
                 "sell_label": "",            # 매도 사유 ('손절매도' / '이탈매도')
                 "sell_on_candle_close": False,  # True: 10분봉 완성 시점에 즉시 매도 (_short_market_down 케이스)
                 "last_alert_tenmin_key": _cached_alert_key_1,  # 스케줄러 재호출 간 유지 (10분 중복 방지)
-            }
-            _cached_alert_key_2 = _alert_keys.get("2")
-            breakdown_wait_2 = {
-                "active": False,             # 이탈가 이탈 감지 여부
-                "breach_price": 0,           # 이탈된 가격 (stop_price 또는 exit_price)
-                "breach_type": "",           # "exit" or "stop"
-                "tenmin_key": None,          # 이탈 발생 10분봉 키 (같은 봉 완성 시점에 sell_trigger)
-                "last_alert_tenmin_key": _cached_alert_key_2,
             }
 
         current_10min_key = get_completed_10min_key(datetime.now())
@@ -1276,6 +1388,7 @@ def get_kis_1min_from_datetime_simul(
                                 "base_vol":  base_10min["거래량"].astype(int).sum(),
                                 "base_key":  base_key,
                             })
+                            tenmin_state["peak_high"] = max(tenmin_state["peak_high"], tenmin_state["base_high"])  # 조건 B 고점 초기화 (Batch 동일)
                             if verbose:
                                 print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}]"
                                     f" 목표가 {target_price:,}원 돌파 기준봉 설정"
@@ -1297,28 +1410,6 @@ def get_kis_1min_from_datetime_simul(
                         completed_key = get_completed_10min_key(row["dt"])
                         tenmin_df     = df[df["dt"].apply(get_completed_10min_key) == completed_key]
 
-                        # ── breakdown_wait_2: 분봉 저가 기준 이탈가 감지 → 해당 10분봉 완성 시 매도 ──
-                        # 이탈가 이탈이 발생한 10분봉의 마지막 분봉 처리 시 조건 D에서 sell_trigger 활성화
-                        if not breakdown_wait_2["active"]:
-                            _bw2_10min_key = get_10min_key(row["dt"])
-                            _bw2_is_exit = exit_price and low_price <= int(exit_price)
-                            _bw2_is_stop = low_price <= int(stop_price)
-                            if _bw2_is_exit or _bw2_is_stop:
-                                _bw2_breach_price = int(exit_price) if _bw2_is_exit else int(stop_price)
-                                _bw2_breach_type = "exit" if _bw2_is_exit else "stop"
-                                _bw2_label = "최종이탈가" if _bw2_is_exit else "이탈가"
-                                breakdown_wait_2.update({
-                                    "active": True,
-                                    "breach_price": _bw2_breach_price,
-                                    "breach_type": _bw2_breach_type,
-                                    "tenmin_key": _bw2_10min_key,
-                                })
-                                _bw2_key_str = _bw2_10min_key.strftime("%Y%m%d%H%M")
-                                if breakdown_wait_2["last_alert_tenmin_key"] is None or _bw2_key_str > breakdown_wait_2["last_alert_tenmin_key"]:
-                                    breakdown_wait_2["last_alert_tenmin_key"] = _bw2_key_str
-                                    _write_alert_key_db(conn, acct_no, stock_code, start_date, start_time, "2", _bw2_key_str)
-                                    print(f"[시뮬]-{nick}-[{row['일자']}-{row['시간']}]{stock_name}[{stock_code}] {_bw2_label}({_bw2_breach_price:,})원 분봉 저가 이탈 → 10분봉 완성 후 매도 대기")
-                        
                         # 10분봉의 마지막 1분봉일 때만 처리 (10분봉 완성 시점)
                         # 돌파 발생 10분봉 자체는 스킵 → 다음 완성 10분봉부터 매도/갱신 체크
                         if not tenmin_df.empty and row["dt"] == tenmin_df["dt"].max():
@@ -1339,19 +1430,25 @@ def get_kis_1min_from_datetime_simul(
 
                             prev_key      = completed_key - timedelta(minutes=10)
                             prev_tenmin_df = df[df["dt"].apply(get_completed_10min_key) == prev_key]
+                            prev_exists    = not prev_tenmin_df.empty
                             prev_close_10  = (int(prev_tenmin_df.loc[prev_tenmin_df["dt"].idxmax(), "종가"])
-                                            if not prev_tenmin_df.empty else safety_margin + 1)
+                                            if prev_exists else safety_margin + 1)   # 직전봉 없으면 정상 간주
 
-                            # 조건 D: breakdown_wait_2 활성 → 분봉 저가 이탈가 이탈 확인된 10분봉 완성 시 매도
-                            # 이탈가 이탈이 발생한 10분봉(tenmin_key)과 현재 완성 중인 봉(completed_key)이
-                            # 같거나 이후이면 sell_trigger 활성 (이탈가 이탈 분봉이 속한 봉이 완성되는 시점)
-                            if not sell_trigger and breakdown_wait_2["active"] and breakdown_wait_2["tenmin_key"] is not None:
-                                if completed_key >= breakdown_wait_2["tenmin_key"]:
-                                    _bw2_label = "최종이탈가" if breakdown_wait_2["breach_type"] == "exit" else "이탈가"
+                            # 조건 D (Batch 동일): 이탈가/최종이탈가를 10분봉 종가로 이탈 → 즉시 매도
+                            # - 최종이탈가(exit_price): 종가 이탈 시 무조건 매도
+                            # - 이탈가(stop_price): 기준봉 저가보다 높을 때만 하드스탑으로 적용
+                            #   (stop_price == base_low 인 경우 기준봉 저가 이탈은 조건 A / C 에서 판단)
+                            if not sell_trigger:
+                                _d_is_exit = bool(exit_price) and tenmin_close <= int(exit_price)
+                                _d_is_stop = int(stop_price) > tenmin_state["base_low"] and tenmin_close <= int(stop_price)
+                                if _d_is_exit or _d_is_stop:
+                                    _d_label = "최종이탈가" if _d_is_exit else "이탈가"
+                                    _d_price = int(exit_price) if _d_is_exit else int(stop_price)
                                     sell_trigger = True
                                     sell_price = get_valid_sell_price(max(tenmin_close, safety_margin))
-                                    sell_reason = f"{_bw2_label}({breakdown_wait_2['breach_price']:,})원 분봉 저가 이탈 10분봉 완성 매도 (매도가:{sell_price:,})"
-                            
+                                    sell_reason = (f"[조건D] {_d_label}({_d_price:,})원 10분봉 종가({tenmin_close:,}원) 이탈"
+                                                   f" (매도가:{sell_price:,}원 = max(종가, 안전마진 {safety_margin:,}원))")
+
                             # 조건 A: 기준봉 저가 이탈 + 안전마진 이하
                             if not sell_trigger and tenmin_close < tenmin_state["base_low"] and tenmin_close <= safety_margin:
                                 sell_trigger = True
@@ -1379,20 +1476,10 @@ def get_kis_1min_from_datetime_simul(
                                     sell_price   = get_valid_sell_price(max(tenmin_close, peak_sell_threshold))
                                     sell_reason  = f"고점({tenmin_state['peak_high']:,})원 되돌림 임계({peak_sell_threshold:,})원 종가 이탈"
 
-                            # 조건 C-1: 이탈가/최종이탈가 이탈 → 즉시 매도
-                            # 거래량·연속이탈 조건 없이 이탈가 기준으로 즉시 매도 처리
-                            if not sell_trigger and tenmin_close > safety_margin:
-                                is_exit_breach = exit_price and tenmin_close <= int(exit_price)
-                                is_stop_breach = tenmin_close <= int(stop_price)
-                                if is_exit_breach or is_stop_breach:
-                                    sell_trigger = True
-                                    sell_price = get_valid_sell_price(max(tenmin_close, safety_margin))
-                                    sell_reason = f"이탈가({stop_price:,})원 이탈 (매도가:{sell_price:,})"
-
-                            # 조건 C-2: 기준봉 저가를 종가로 이탈 + 안전마진 이상 → 연속 이탈 판단
+                            # 조건 C: 기준봉 저가를 종가로 이탈 + 안전마진 이상 → 연속 이탈 판단 (직전봉 없으면 연속 이탈 아님)
                             # 거래량 초과 OR 연속 이탈 시 매도 (저거래량 지속 하락 방어)
                             consecutive_breaks = ((1 if tenmin_close < tenmin_state["base_low"] else 0)
-                                                + (1 if prev_close_10 < tenmin_state["base_low"] else 0))
+                                                + (1 if prev_exists and prev_close_10 < tenmin_state["base_low"] else 0))
                             late_day_thresh    = 1 if current_time >= dt_time(14, 30) else 2
                             if (not sell_trigger and tenmin_close < tenmin_state["base_low"]
                                     and tenmin_close > safety_margin
@@ -1402,13 +1489,14 @@ def get_kis_1min_from_datetime_simul(
                                 sell_reason  = f"기준봉 저가({tenmin_state['base_low']:,})원 종가 이탈"
 
                             if sell_trigger:
-                                    # 해당 종목의 시장이 단기 하락인 경우 : 매도주문가 = 현재가
-                                if _short_market_down:
-                                    order_price = sell_price
-                                else:   # 해당 종목의 시장이 단기 상승인 경우 : 매도주문가 = 기준봉저가가 매도가 아래면 매도가 otherwise 기준봉저가
-                                    order_price = sell_price if tenmin_state['base_low'] < sell_price else tenmin_state['base_low']
+                                # 매도주문가 (Batch plan_tenmin_sell 과 동일): 조건별 매도가(sell_price)는 하한으로만
+                                # 사용하고 현재가(신호 분봉 종가) 기준 지정가. 미체결 시 2분 간격 현재가 재주문은
+                                # update_trail_price_at_close 에서 이후 분봉으로 재현한다.
+                                # 매도비율: 시장 단기 하락 70% / 그 외 50%
+                                order_price, price_desc = plan_tenmin_sell(sell_price, close_price, _short_market_down)
+                                sell_reason  = f"{sell_reason} → 주문가 {price_desc}"
                                 trail_rate   = round((100 - (order_price / basic_price) * 100) * -1, 2) if basic_price > 0 else 0
-                                i_trail_plan = trail_plan if trail_plan else "50"
+                                i_trail_plan = trail_plan if trail_plan else ("70" if _short_market_down else "50")
                                 trail_qty    = int(basic_qty * int(i_trail_plan) * 0.01)
                                 trail_amt    = order_price * trail_qty
                                 u_basic_qty  = basic_qty - trail_qty
@@ -1452,14 +1540,15 @@ def get_kis_1min_from_datetime_simul(
                                         reason = "고가 돌파" if tenmin_high > tenmin_state["base_high"] else "거래량 돌파"
                                         print(f"[시뮬]-{nick}-[{completed_key.strftime('%Y%m%d %H:%M')}]{stock_name}[{stock_code}]"
                                             f" {reason} 기준봉 갱신 고가:{tenmin_high:,} 저가:{tenmin_low:,} 거래량:{tenmin_vol:,}")
+                                    # stop_price ← 끌어올린 기준봉 저가, target_price ← 누적 최고가 (Batch 동일, 재실행 복원용)
                                     update_simul_trail(
-                                        int(tenmin_low), int(tenmin_high), int(tenmin_vol),
+                                        int(tenmin_state["base_low"]), int(tenmin_state["peak_high"]), int(tenmin_vol),
                                         acct_no, stock_code, start_date, start_time, "2",
                                         row['시간'].replace(':', '') + '00', conn
                                     )
                             if not base_updated:
                                 update_simul_trail(
-                                    int(tenmin_state["base_low"]), int(tenmin_state["base_high"]),
+                                    int(tenmin_state["base_low"]), int(tenmin_state["peak_high"]),
                                     int(tenmin_state["base_vol"]), acct_no, stock_code,
                                     start_date, start_time, "2",
                                     row['시간'].replace(':', '') + '00', conn
@@ -2051,12 +2140,75 @@ def simulate_rebalance(phiils2_account, sim_date, horizon="D", strength_mode="ne
 # ─────────────────────────────────────────
 # proc_min 이후 1분봉 기준 trail_price 미존재 대상 종가 갱신
 # ─────────────────────────────────────────
+def closing_auction_prevlow_sell_simul(conn, ac):
+    """Batch closing_auction_prevlow_sell 시뮬 버전 — trail_tp 'L' 로 남은 종목 일봉상 오종전저 종가 전량 매도.
+    Batch 는 15:21(수능일 16:21) 동시호가 예상체결가·예상거래량으로 판단해 시장가 주문하지만,
+    시뮬은 장마감 후 확정값으로 판단한다.
+    - 오늘 종가: 15:30(수능일 16:30) 단일가 분봉 종가
+    - 거래량 조건: 당일 누적거래량 > 전일 거래량 50%
+    - 조건 충족 시 보유수량(basic_qty) 전량을 종가로 매도 처리 (trail_tp 'L' → '4', proc_min = 단일가 시각)
+    - 당일 장마감(15:30, 수능일 16:30) 전 실행이면 종가가 확정되지 않았으므로 판단하지 않는다."""
+    close_hms = "163000" if today.endswith("1119") else "153000"
+    _now = datetime.now()
+    if today == _now.strftime("%Y%m%d") and _now.strftime("%H%M%S") < close_hms:
+        print(f"[시뮬] 동시호가 오종전저 - 장마감({close_hms[:2]}:{close_hms[2:4]}) 전 실행 → 종가 미확정, 건너뜀")
+        return
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT code, name, trail_day, trail_dtm, COALESCE(basic_price, 0), COALESCE(basic_qty, 0)
+        FROM {SIMUL_TABLE}
+        WHERE acct_no = %s AND trail_day = %s AND trail_tp = 'L' AND COALESCE(basic_qty, 0) > 0
+        ORDER BY code, trail_dtm DESC
+    """, (SIMUL_ACCT, today))
+    rows = cur.fetchall()
+    cur.close()
+    if not rows:
+        print("[시뮬] 동시호가 오종전저 대상('L') 없음")
+        return
+
+    _done = set()
+    for code, name, trail_day, trail_dtm, basic_price, basic_qty in rows:
+        if code in _done:
+            continue
+        _done.add(code)
+        try:
+            prev = get_prev_day_info(code, today, ac['access_token'], ac['app_key'], ac['app_secret'], conn)
+            if not prev or not prev.get('low_price'):
+                print(f"[시뮬] [{name}({code})] 동시호가 오종전저 - 전일 일봉 없음 → 건너뜀")
+                continue
+            prev_low, prev_vol = int(prev['low_price']), int(prev.get('volume') or 0)
+
+            # 오늘 종가(15:30 단일가)·당일 거래량: 일봉 확정값 사용
+            # (분봉의 '누적거래량'은 조회 시점 현재 누적값이 전 행에 들어가 과거일 재현에 쓸 수 없음)
+            day = get_kis_daily_chart(code, today, ac['access_token'], ac['app_key'], ac['app_secret'], verbose=False)
+            if not day or not day.get('close_price'):
+                print(f"[시뮬] [{name}({code})] 동시호가 오종전저 - 당일 일봉 없음 → 건너뜀")
+                continue
+            close_px = int(day['close_price'])
+            day_vol  = int(day.get('volume') or 0)
+            if not (close_px < prev_low and day_vol > int(prev_vol / 2)):
+                continue
+
+            basic_price, basic_qty = int(basic_price), int(basic_qty)
+            trail_rate = round((close_px / basic_price - 1) * 100, 2) if basic_price > 0 else 0
+            reason = (f"동시호가 오종전저 종가 매도 - 종가:{close_px:,}원 < 전일저가:{prev_low:,}원,"
+                      f" 거래량:{day_vol:,}주 > 전일거래량 50%:{int(prev_vol / 2):,}주")
+            print(f"[시뮬] [{name}({code})] {reason}")
+            update_simul_daily_close(
+                "SIMUL", close_px, basic_qty, close_px * basic_qty, trail_rate, "100", 0, 0, SIMUL_ACCT,
+                code, name, trail_day, trail_dtm, "4", close_hms, reason, conn
+            )
+        except Exception as e:
+            print(f"[시뮬] [{name}({code})] 동시호가 오종전저 매도 오류: {e}")
+
+
 def update_trail_price_at_close(conn, ac):
     """trail_tp='3','4' 대상: proc_min 이후 1분봉 기준 trail_price 미존재 시 15:20 현재가로 trail_price 갱신."""
     now = datetime.now()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty
+        SELECT code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty,
+               COALESCE(trade_result, '')
         FROM {SIMUL_TABLE}
         WHERE acct_no = %s AND trail_day = %s AND trail_tp IN ('3', '4') AND proc_min < '152000'
         ORDER BY code
@@ -2070,10 +2222,29 @@ def update_trail_price_at_close(conn, ac):
 
     target_dt = datetime.strptime(today + "152000", "%Y%m%d%H%M%S")
 
-    for code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty in rows:
+    def _save_price(code, trail_day, trail_dtm, price, basic_price, trail_qty, proc_min_val):
+        _rate = round((price / basic_price - 1) * 100, 2) if basic_price > 0 else 0
+        upd_cur = conn.cursor()
+        upd_cur.execute(f"""
+            UPDATE {SIMUL_TABLE}
+            SET trail_price   = %s
+                , trail_rate  = %s
+                , trail_amt   = %s
+                , proc_min    = %s
+                , mod_dt      = %s
+            WHERE acct_no = %s AND code = %s
+              AND trail_day = %s AND trail_dtm = %s
+              AND trail_tp IN ('3', '4')
+        """, (price, _rate, price * trail_qty, proc_min_val, now, SIMUL_ACCT, code, trail_day, trail_dtm))
+        conn.commit()
+        upd_cur.close()
+
+    for code, name, trail_price, proc_min, trail_day, trail_dtm, basic_price, trail_qty, trade_result in rows:
         trail_price = int(trail_price or 0)
         if trail_price <= 0:
             continue
+        basic_price = int(basic_price or 0)
+        trail_qty   = int(trail_qty or 0)
         proc_min_str = str(int(proc_min or 0)).zfill(6)
         try:
             proc_dt = datetime.strptime(trail_day + proc_min_str, "%Y%m%d%H%M%S")
@@ -2085,6 +2256,40 @@ def update_trail_price_at_close(conn, ac):
         if df.empty:
             print(f"[시뮬] [{name}({code})] 15:20 분봉 없음 → 스킵")
             continue
+
+        # ── 자동 매도('[AUTO] ...' — trail_tp '1','2' 조건 D/A/B/C·이탈 매도, trail_tp 'L' 전 경로) 미체결 재주문 재현 ──
+        # (표식 도입 전 '수익완료'/'안전마진' 포함, 화면 수동 매도 '매도처리'는 제외)
+        # Batch reorder_pending_auto_sells 와 동일:주문 후 2분 안에 체결(분봉 고가 ≥ 주문가)되지
+        # 않으면 그 시점 현재가(2분째 분봉 종가)로 재주문, 15:20 전까지 반복. 15:20까지 미체결이면
+        # 아래 기존 처리(15:20 현재가 정리)로 넘어간다.
+        if str(trade_result).startswith(AUTO_SELL_TAG.strip()) or trade_result in ('수익완료', '안전마진'):
+            _bars = df[(df["dt"] > proc_dt) & (df["dt"] <= target_dt)].sort_values("dt")
+            _price, _ord_dt, _filled, _reorders = trail_price, proc_dt, False, 0
+            _step = timedelta(seconds=TENMIN_SELL_REORDER_SEC)
+            while True:
+                _win = _bars[(_bars["dt"] > _ord_dt) & (_bars["dt"] <= _ord_dt + _step)]
+                if _win.empty:
+                    break
+                if (_win["고가"].astype(int) >= _price).any():
+                    _filled = True
+                    break
+                _last = _win.iloc[-1]
+                if _last["dt"] >= target_dt or len(_win) < 2:
+                    break   # 재주문 시점이 15:20 이후 → 기존 15:20 정리로
+                _new = get_valid_sell_price(int(_last["종가"]))
+                print(f"[시뮬] [{name}({code})] {_ord_dt.strftime('%H:%M')} 주문 {_price:,}원 2분 미체결"
+                      f" → {_last['dt'].strftime('%H:%M')} 현재가 {_new:,}원 재주문")
+                _price, _ord_dt, _reorders = _new, _last["dt"], _reorders + 1
+            if _filled:
+                if _reorders:
+                    _save_price(code, trail_day, trail_dtm, _price, basic_price, trail_qty,
+                                _ord_dt.strftime('%H%M%S'))
+                    print(f"[시뮬] [{name}({code})] trail_price 갱신: {trail_price:,}→{_price:,}원"
+                          f" (재주문 {_reorders}회 후 체결)")
+                else:
+                    print(f"[시뮬] [{name}({code})] trail_price({trail_price:,}) 2분 내 체결 → 미갱신")
+                continue
+            trail_price, proc_dt = _price, _ord_dt
 
         df_range = df[(df["dt"] > proc_dt) & (df["dt"] <= target_dt)].copy()
         if df_range.empty:
@@ -2210,6 +2415,10 @@ def process_account_simul():
                     print(f"⚠️ [시뮬] [{stock_info[1]}-{stock_info[0]}] 오류: {e}")
                 finally:
                     conn_stock.close()
+
+        # 장중 판단 후에도 'L' 로 남은 종목: 일봉상 오종전저(종가 < 전일저가, 거래량 > 전일 50%) 종가 전량 매도
+        # (Batch closing_auction_prevlow_sell 대응 — 리밸런싱 전에 수행해 매도 종목은 리밸런싱 대상에서 제외)
+        closing_auction_prevlow_sell_simul(conn_acct, ac)
 
         update_trail_price_at_close(conn_acct, ac)
 

@@ -456,7 +456,7 @@
     }
     .dash-summary {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 8px;
       margin-bottom: 16px;
     }
@@ -965,6 +965,13 @@
             {{ (dashboard.acct?.total_profit_loss_amt ?? 0) >= 0 ? '+' : '' }}{{ fmt(dashboard.acct?.total_profit_loss_amt) }}
           </div>
         </div>
+        <!-- 합계 = 평가손익(잔여 보유 종가 평가) + 당일손익(당일 매도 실현) -->
+        <div class="dash-metric" title="평가손익 + 당일손익">
+          <div class="dash-metric-lbl">합계</div>
+          <div class="dash-metric-val" :class="dashTotalPl >= 0 ? 'pos' : 'neg'">
+            {{ dashTotalPl >= 0 ? '+' : '' }}{{ fmt(dashTotalPl) }}
+          </div>
+        </div>
       </div>
 
       <!-- 종목별 현황 -->
@@ -974,7 +981,11 @@
             <tr>
               <th>종목코드</th><th>종목명</th>
               <th>보유단가</th><th>보유수량</th><th>보유금액</th>
-              <th>수익율</th><th>수익금액</th><th>매도수량</th>
+              <th title="잔여 보유수량의 종가 기준 평가수익율">평가수익율</th>
+              <th title="잔여 보유수량의 종가 기준 평가손익">평가손익</th>
+              <th>매도수량</th>
+              <th title="당일 매도 평균단가">매도단가</th>
+              <th title="당일 매도분 실현손익 = (매도단가 - 보유단가) × 매도수량">실현손익</th>
             </tr>
           </thead>
           <tbody>
@@ -991,6 +1002,12 @@
                 {{ s.value_amt >= 0 ? '+' : '' }}{{ fmt(s.value_amt) }}
               </td>
               <td>{{ s.sell_qty > 0 ? fmt(s.sell_qty) : '-' }}</td>
+              <td>{{ s.sell_price > 0 ? fmt(s.sell_price) : '-' }}</td>
+              <td v-if="s.sell_price > 0" :style="{color: s.realized_amt >= 0 ? '#2dc653' : '#e63946', fontWeight:600}">
+                {{ s.realized_amt >= 0 ? '+' : '' }}{{ fmt(s.realized_amt) }}
+                <span style="font-weight:400;font-size:.9em">({{ s.realized_rate >= 0 ? '+' : '' }}{{ s.realized_rate.toFixed(2) }}%)</span>
+              </td>
+              <td v-else>-</td>
             </tr>
           </tbody>
         </table>
@@ -2201,6 +2218,8 @@ createApp({
     const updateLog     = ref([]);
     const stockInfo     = ref(null);
     const dashboard     = ref(null);
+    // 합계 손익 = 평가손익(잔여 보유 종가 평가) + 당일손익(당일 매도 실현)
+    const dashTotalPl   = computed(() => Number(dashboard.value?.acct?.evlu_pfls_amt ?? 0) + Number(dashboard.value?.acct?.total_profit_loss_amt ?? 0));
 
     // ── 투자관리(invest_mng) 입력 ──
     const investMng = ref({
@@ -3426,7 +3445,7 @@ createApp({
       form, preview, records, loading, nameLookingUp, listError, alert, downloadFiles,
       simDate, running, runLog,
       trailEdit, trailEditBasicAmt, trailEditLossAmt, trailEditLookingUp, updateLog,
-      stockInfo, dashboard,
+      stockInfo, dashboard, dashTotalPl,
       investMng, investMngLookingUp, investMngPointError, investMngFromCache,
       investMngStale, investMngStaleDays, investMngRemainRate, investMngSalesRate,
       investMngLookup, applyInvestMng,

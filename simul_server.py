@@ -721,6 +721,21 @@ def dashboard():
             ORDER BY code
         """, (sim_date,))
         stock_rows = cur.fetchall()
+        # 종목별 당일 매도 실현손익 — dly_trading_balance_simul 의 value_rate/value_amt 는 매도 후 잔여수량의
+        # 종가 평가손익만 담으므로, 당일 매도 기록(trail_tp '3' 부분매도 / '4' 전량매도)에서 따로 집계한다.
+        # (자동 매도·리밸런싱·화면 수동매도 모두 trail_price·trail_qty 를 기록 — 합계는 dly_acct_balance_simul
+        #  total_profit_loss_amt(당일손익)와 같은 기준)
+        cur.execute("""
+            SELECT code,
+                   SUM(trail_qty)                              AS sold_qty,
+                   SUM(trail_price * trail_qty)                AS sold_amt,
+                   SUM(basic_price * trail_qty)                AS cost_amt
+            FROM trading_trail_simul
+            WHERE acct_no = 'SIMUL' AND trail_day = %s AND trail_tp IN ('3', '4')
+              AND COALESCE(trail_qty, 0) > 0 AND COALESCE(trail_price, 0) > 0
+            GROUP BY code
+        """, (sim_date,))
+        realized = {r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)) for r in cur.fetchall()}
         cur.close()
         conn.close()
         acct = None
@@ -735,15 +750,24 @@ def dashboard():
                 'total_profit_loss_amt': int(acct_row[6] or 0),
                 'asst_icdc_amt':         int(acct_row[7] or 0),
             }
+        def _realized(code):
+            qty, amt, cost = realized.get(code, (0, 0, 0))
+            pl = amt - cost
+            return {
+                'sell_price':    int(round(amt / qty)) if qty else 0,               # 매도 평균단가
+                'realized_amt':  pl,                                                # 실현손익
+                'realized_rate': round(pl / cost * 100, 2) if cost else 0.0,        # 실현수익율
+            }
         stocks = [{
             'code':          r[0],
             'name':          r[1],
             'balance_price': int(r[2] or 0),
             'balance_qty':   int(r[3] or 0),
             'balance_amt':   int(r[4] or 0),
-            'value_rate':    float(r[5] or 0),
-            'value_amt':     int(r[6] or 0),
+            'value_rate':    float(r[5] or 0),    # 잔여수량 종가 평가수익율
+            'value_amt':     int(r[6] or 0),      # 잔여수량 종가 평가손익
             'sell_qty':      int(r[7] or 0),
+            **_realized(r[0]),
         } for r in stock_rows]
         return jsonify({'acct': acct, 'stocks': stocks, 'date': sim_date})
     except Exception as e:
